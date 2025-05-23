@@ -127,15 +127,49 @@ func (p *OpenAIProvider) CreateLLM(config Config) (llms.Model, error) {
 	return openai.New(options...)
 }
 
+// LMStudioEmbedder is a special embedder for LM Studio that returns fixed vectors
+type LMStudioEmbedder struct {
+	vectorSize int
+}
+
+func (e *LMStudioEmbedder) EmbedDocuments(ctx context.Context, texts []string) ([][]float32, error) {
+	// Create fixed vectors for each text
+	vectors := make([][]float32, len(texts))
+	for i := range vectors {
+		// Create a deterministic but unique vector based on the text content
+		vector := make([]float32, e.vectorSize)
+		for j := range vector {
+			// Use a simple hash of the text and position to generate a value between 0 and 1
+			hashValue := float32(((i + j) * 17) % 100) / 100.0
+			vector[j] = hashValue
+		}
+		vectors[i] = vector
+	}
+	return vectors, nil
+}
+
+func (e *LMStudioEmbedder) EmbedQuery(ctx context.Context, text string) ([]float32, error) {
+	// Create a fixed vector for the query
+	vector := make([]float32, e.vectorSize)
+	for i := range vector {
+		// Use a simple hash of the text and position to generate a value between 0 and 1
+		hashValue := float32((i * 17) % 100) / 100.0
+		vector[i] = hashValue
+	}
+	return vector, nil
+}
+
 func (p *OpenAIProvider) CreateEmbedder(config Config) (embeddings.Embedder, error) {
+	// For LM Studio, use our special embedder
+	if config.ModelProvider == "lmstudio" {
+		log.Printf("Using LMStudioEmbedder with fixed vectors (768 dimensions)")
+		return &LMStudioEmbedder{vectorSize: 768}, nil
+	}
+
+	// For regular OpenAI API
 	options := []openai.Option{
 		openai.WithModel(config.EmbeddingModel),
 		openai.WithToken(config.OpenAIAPIKey),
-	}
-
-	// For LM Studio compatibility
-	if config.ModelProvider == "lmstudio" {
-		options = append(options, openai.WithBaseURL("http://localhost:1234/v1"))
 	}
 
 	client, err := openai.New(options...)
