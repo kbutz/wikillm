@@ -54,6 +54,20 @@ A Retrieval-Augmented Generation (RAG) system for querying Wikipedia content usi
    export OPENAI_API_KEY="lm-studio"
    ```
 
+### Getting Wikipedia Data
+
+You'll need a Wikipedia dump file to create the index. You can download one from:
+https://dumps.wikimedia.org/
+
+For testing, you might want to start with a smaller Wikipedia dump, such as Simple English Wikipedia:
+https://dumps.wikimedia.org/simplewiki/latest/simplewiki-latest-pages-articles.xml.bz2
+
+After downloading, extract the bz2 file:
+
+```bash
+bunzip2 simplewiki-latest-pages-articles.xml.bz2
+```
+
 ### Build and Run
 
 ```bash

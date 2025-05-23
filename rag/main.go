@@ -37,6 +37,7 @@ type Config struct {
 	SearchLimit          int    // Maximum number of search results to return
 	OpenAIAPIKey         string // OpenAI API key for LM Studio compatibility
 	OllamaURL            string // Ollama server URL
+	ForceRecreate        bool   // Force recreate collection if dimensions mismatch
 }
 
 // WikipediaPage represents a page in the Wikipedia dump
@@ -51,6 +52,21 @@ type RAGPipeline struct {
 	embedder       embeddings.Embedder
 	vectorStore    vectorstores.VectorStore
 	collectionName string
+	vectorSize     int
+}
+
+// QdrantCollectionInfo represents Qdrant collection information
+type QdrantCollectionInfo struct {
+	Result struct {
+		Config struct {
+			Params struct {
+				Vectors struct {
+					Size     int    `json:"size"`
+					Distance string `json:"distance"`
+				} `json:""`
+			} `json:"params"`
+		} `json:"config"`
+	} `json:"result"`
 }
 
 // LLMProvider interface for different model providers
@@ -147,23 +163,95 @@ func GetProvider(config Config) LLMProvider {
 	}
 }
 
-// createQdrantCollection creates a collection in Qdrant if it doesn't exist
-func createQdrantCollection(qdrantURL *url.URL, collectionName string, vectorSize int) error {
-	// Check if collection exists
+// getEmbeddingDimensions determines the vector dimensions by making a test embedding
+func getEmbeddingDimensions(embedder embeddings.Embedder) (int, error) {
+	ctx := context.Background()
+
+	// Make a test embedding with a simple text
+	embeddings, err := embedder.EmbedDocuments(ctx, []string{"test"})
+	if err != nil {
+		return 0, fmt.Errorf("failed to create test embedding: %w", err)
+	}
+
+	if len(embeddings) == 0 || len(embeddings[0]) == 0 {
+		return 0, fmt.Errorf("embedding model returned empty vector")
+	}
+
+	// Return the dimensions of the first vector
+	return len(embeddings[0]), nil
+}
+
+// getQdrantCollectionInfo gets information about an existing collection
+func getQdrantCollectionInfo(qdrantURL *url.URL, collectionName string) (*QdrantCollectionInfo, error) {
 	checkURL := fmt.Sprintf("%s/collections/%s", qdrantURL.String(), collectionName)
 	resp, err := http.Get(checkURL)
 	if err != nil {
-		return fmt.Errorf("failed to check if collection exists: %w", err)
+		return nil, fmt.Errorf("failed to check collection: %w", err)
 	}
 	defer resp.Body.Close()
 
-	// If collection exists, return
-	if resp.StatusCode == http.StatusOK {
-		log.Printf("Collection %s already exists", collectionName)
-		return nil
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("collection does not exist")
 	}
 
-	// Collection doesn't exist, create it
+	var info QdrantCollectionInfo
+	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
+		return nil, fmt.Errorf("failed to decode collection info: %w", err)
+	}
+
+	return &info, nil
+}
+
+// deleteQdrantCollection deletes a collection
+func deleteQdrantCollection(qdrantURL *url.URL, collectionName string) error {
+	deleteURL := fmt.Sprintf("%s/collections/%s", qdrantURL.String(), collectionName)
+
+	req, err := http.NewRequest("DELETE", deleteURL, nil)
+	if err != nil {
+		return fmt.Errorf("failed to create delete request: %w", err)
+	}
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to delete collection: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNotFound {
+		return fmt.Errorf("failed to delete collection, status: %d", resp.StatusCode)
+	}
+
+	return nil
+}
+
+// createQdrantCollection creates a collection in Qdrant if it doesn't exist
+func createQdrantCollection(qdrantURL *url.URL, collectionName string, vectorSize int, forceRecreate bool) error {
+	// Check if collection exists and get its info
+	info, err := getQdrantCollectionInfo(qdrantURL, collectionName)
+	if err == nil {
+		// Collection exists, check dimensions
+		existingSize := info.Result.Config.Params.Vectors.Size
+
+		if existingSize == vectorSize {
+			log.Printf("Collection %s exists with correct dimensions (%d)", collectionName, vectorSize)
+			return nil
+		}
+
+		log.Printf("⚠️  Collection %s has dimension mismatch: expected %d, got %d",
+			collectionName, vectorSize, existingSize)
+
+		if !forceRecreate {
+			return fmt.Errorf("dimension mismatch: collection has %d dimensions but embedding model produces %d. Use --force-recreate to fix", existingSize, vectorSize)
+		}
+
+		log.Printf("🗑️  Deleting existing collection %s...", collectionName)
+		if err := deleteQdrantCollection(qdrantURL, collectionName); err != nil {
+			return fmt.Errorf("failed to delete existing collection: %w", err)
+		}
+	}
+
+	// Create new collection
 	createURL := fmt.Sprintf("%s/collections/%s", qdrantURL.String(), collectionName)
 
 	// Prepare request body
@@ -187,7 +275,7 @@ func createQdrantCollection(qdrantURL *url.URL, collectionName string, vectorSiz
 	req.Header.Set("Content-Type", "application/json")
 
 	client := &http.Client{}
-	resp, err = client.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("failed to create collection: %w", err)
 	}
@@ -198,7 +286,7 @@ func createQdrantCollection(qdrantURL *url.URL, collectionName string, vectorSiz
 		return fmt.Errorf("failed to create collection, status: %d, response: %s", resp.StatusCode, string(bodyBytes))
 	}
 
-	log.Printf("Created collection %s", collectionName)
+	log.Printf("✅ Created collection %s with %d dimensions", collectionName, vectorSize)
 	return nil
 }
 
@@ -233,7 +321,7 @@ func NewRAGPipeline(config Config) (*RAGPipeline, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to determine embedding dimensions: %w", err)
 	}
-	log.Printf("Detected embedding dimensions: %d", vectorSize)
+	log.Printf("📏 Detected embedding dimensions: %d", vectorSize)
 
 	// Parse Qdrant URL
 	qdrantURL, err := url.Parse(config.QdrantURL)
@@ -242,7 +330,7 @@ func NewRAGPipeline(config Config) (*RAGPipeline, error) {
 	}
 
 	// Create the collection if it doesn't exist with the correct dimensions
-	if err := createQdrantCollection(qdrantURL, config.QdrantCollectionName, vectorSize); err != nil {
+	if err := createQdrantCollection(qdrantURL, config.QdrantCollectionName, vectorSize, config.ForceRecreate); err != nil {
 		return nil, fmt.Errorf("failed to create Qdrant collection: %w", err)
 	}
 
@@ -260,6 +348,7 @@ func NewRAGPipeline(config Config) (*RAGPipeline, error) {
 		embedder:       embedder,
 		vectorStore:    store,
 		collectionName: config.QdrantCollectionName,
+		vectorSize:     vectorSize,
 	}, nil
 }
 
@@ -422,24 +511,6 @@ func (r *RAGPipeline) Search(ctx context.Context, query string, limit int) ([]sc
 	return docs, nil
 }
 
-// getEmbeddingDimensions determines the vector dimensions by making a test embedding
-func getEmbeddingDimensions(embedder embeddings.Embedder) (int, error) {
-	ctx := context.Background()
-
-	// Make a test embedding with a simple text
-	embeddings, err := embedder.EmbedDocuments(ctx, []string{"test"})
-	if err != nil {
-		return 0, fmt.Errorf("failed to create test embedding: %w", err)
-	}
-
-	if len(embeddings) == 0 || len(embeddings[0]) == 0 {
-		return 0, fmt.Errorf("embedding model returned empty vector")
-	}
-
-	// Return the dimensions of the first vector
-	return len(embeddings[0]), nil
-}
-
 // Close closes the RAG pipeline
 func (r *RAGPipeline) Close() error {
 	// Nothing specific to close for now
@@ -458,6 +529,7 @@ func parseFlags() Config {
 	searchLimit := flag.Int("limit", 5, "Maximum number of search results")
 	openaiKey := flag.String("openai-key", "", "OpenAI API key (or set OPENAI_API_KEY env var)")
 	ollamaURL := flag.String("ollama-url", "http://localhost:11434", "Ollama server URL")
+	forceRecreate := flag.Bool("force-recreate", false, "Force recreate collection if dimensions mismatch")
 
 	flag.Parse()
 
@@ -478,6 +550,7 @@ func parseFlags() Config {
 		SearchLimit:          *searchLimit,
 		OpenAIAPIKey:         apiKey,
 		OllamaURL:            *ollamaURL,
+		ForceRecreate:        *forceRecreate,
 	}
 }
 
@@ -528,7 +601,7 @@ func startInteractiveSession(model llms.Model, ragPipeline *RAGPipeline, config 
 
 	fmt.Println("=== WikiLLM RAG Interactive Session ===")
 	fmt.Printf("Model: %s (%s)\n", config.ModelName, config.ModelProvider)
-	fmt.Printf("Embedding: %s\n", config.EmbeddingModel)
+	fmt.Printf("Embedding: %s (%d dimensions)\n", config.EmbeddingModel, ragPipeline.vectorSize)
 	fmt.Printf("Vector Store: %s\n", config.QdrantURL)
 	fmt.Println("Type 'exit' to quit, 'help' for commands")
 	fmt.Println(strings.Repeat("=", 50))
