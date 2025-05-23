@@ -26,7 +26,7 @@ Before you begin, ensure you have the following installed:
 
 ```bash
 git clone https://github.com/yourusername/wikillm.git
-cd wikillm
+cd wikillm/naivelocal
 ```
 
 2. Build the application:
@@ -56,7 +56,7 @@ bunzip2 simplewiki-latest-pages-articles.xml.bz2
 The first time you run the application, you need to create an index from the Wikipedia dump:
 
 ```bash
-./wikillm -wikipedia /path/to/wikipedia-dump.xml
+./naivelocal -wikipedia /path/to/wikipedia-dump.xml
 ```
 
 This will create an index in the default location (`./wikipedia_index`). This process may take some time depending on the size of the Wikipedia dump.
@@ -66,7 +66,7 @@ This will create an index in the default location (`./wikipedia_index`). This pr
 Once the index is created, you can run the application without the `-wikipedia` flag:
 
 ```bash
-./wikillm
+./naivelocal
 ```
 
 ### Command Line Options
@@ -80,7 +80,7 @@ Once the index is created, you can run the application without the `-wikipedia` 
 Example:
 
 ```bash
-./wikillm -model llama3 -provider lmstudio -index /data/wiki_index -limit 10
+./naivelocal -model llama3 -provider lmstudio -index /data/wiki_index -limit 10
 ```
 
 ## Interactive Session
@@ -114,10 +114,10 @@ Use the `-provider` flag to specify which provider you want to use:
 
 ```bash
 # Use LM Studio (default)
-./wikillm -provider lmstudio
+./naivelocal -provider lmstudio
 
 # Use Ollama
-./wikillm -provider ollama
+./naivelocal -provider ollama
 ```
 
 If you specify an unknown provider or don't specify a provider at all, WikiLLM will default to using LM Studio.
@@ -131,13 +131,13 @@ When using LM Studio as your provider:
 3. Run WikiLLM with the model name that matches your loaded model:
 
 ```bash
-./wikillm -provider lmstudio -model llama3
+./naivelocal -provider lmstudio -model llama3
 ```
 
 The model name should match what you've loaded in LM Studio. If you're using the default model in LM Studio, you can simply use the default model name:
 
 ```bash
-./wikillm -provider lmstudio -model default
+./naivelocal -provider lmstudio -model default
 ```
 
 ### Ollama Models
@@ -152,7 +152,7 @@ When using Ollama as your provider, you can specify various models including:
 For example:
 
 ```bash
-./wikillm -provider ollama -model llama2
+./naivelocal -provider ollama -model llama2
 ```
 
 For a complete list of available Ollama models, visit the [Ollama Models Library](https://ollama.ai/library).

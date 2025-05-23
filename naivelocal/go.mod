@@ -1,4 +1,4 @@
-module kbutz/wikillm
+module github.com/kbutz/wikillm/naivelocal
 
 go 1.24
 
