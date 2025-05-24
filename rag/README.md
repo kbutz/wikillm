@@ -99,9 +99,17 @@ go build -o wikillm-rag .
 # Index Wikipedia data (make sure you've pulled the embedding model first)
 # For Ollama, ensure you've run: ollama pull nomic-embed-text
 ./wikillm-rag -wikipedia ./path/to/simplewiki.xml
+
+# Load pre-indexed embeddings from a file with the following. The file is hard coded right now.
+./wikillm-rag -load
+
+# If you loaded the minilm embeddings from the example here and want to use lmstudio, you also need to specify the embedding provider:
+./wikillm-rag -provider lmstudio -embedding-provider all-minlm
 ```
 
 ### Running with LM Studio
+
+TODO: LM Studio doesn't work with the all-minilm embedding model right now, so need to figure that out still
 
 1. Download and install [LM Studio](https://lmstudio.ai/) for your platform
 2. Launch LM Studio and download a model of your choice
