@@ -8,25 +8,27 @@ import (
 	pb "github.com/qdrant/go-client/qdrant"
 	"log"
 	"os"
+	"strings"
 )
 
 type record struct {
-	Title     string    `json:"title"`
-	URL       string    `json:"url"`
-	Text      string    `json:"text"`
-	Embedding []float32 `json:"embedding"`
+	ID         string    `json:"id"`
+	Body       string    `json:"body"`
+	Embedding  []float32 `json:"embedding,omitempty"`
+	AllMiniLM  []float32 `json:"all-MiniLM-L6-v2,omitempty"`
 }
 
 // --------------------------------------------------------------------------
 
-func load() {
+// Load loads the embeddings from the wiki_minilm.ndjson.gz file into Qdrant
+func Load() {
 	const (
 		modelFile  = "wiki_minilm.ndjson.gz"
 		dim        = 384
 		collection = "wiki_minilm"
 		batchSize  = 2048
 		qdrantHost = "localhost"
-		qdrantPort = 6333
+		qdrantPort = 6334
 	)
 
 	// Set environment variables to disable HTTP/2
@@ -35,28 +37,9 @@ func load() {
 
 	ctx := context.Background()
 
-	// Configure gRPC client with HTTP/1.1 compatibility
-	//client, err := pb.NewClient(&pb.Config{
-	//	Host: qdrantHost,
-	//	Port: qdrantPort,
-	//	GrpcOptions: []grpc.DialOption{
-	//		grpc.WithTransportCredentials(insecure.NewCredentials()),
-	//		grpc.WithDefaultCallOptions(
-	//			grpc.MaxCallRecvMsgSize(100 * 1024 * 1024), // 100 MB
-	//			grpc.MaxCallSendMsgSize(100 * 1024 * 1024), // 100 MB
-	//		),
-	//		grpc.WithKeepaliveParams(keepalive.ClientParameters{
-	//			Time:                10 * time.Second,
-	//			Timeout:             5 * time.Second,
-	//			PermitWithoutStream: true,
-	//		}),
-	//		// Force HTTP/1.1 by disabling HTTP/2
-	//		grpc.WithDisableServiceConfig(),
-	//	},
-	//})
 	client, err := pb.NewClient(&pb.Config{
-		Host: "localhost",
-		Port: 6334,
+		Host: qdrantHost,
+		Port: qdrantPort,
 	})
 	if err != nil {
 		log.Fatalf("Failed to create Qdrant client: %v", err)
@@ -114,6 +97,7 @@ CollectionReady:
 
 	points := make([]*pb.PointStruct, 0, batchSize)
 	var id uint64
+	var skippedCount uint64
 
 	batchCount := 0
 	flush := func() {
@@ -132,25 +116,68 @@ CollectionReady:
 		points = points[:0]
 	}
 
+	// Create a decoder to read the JSON data
+	dec = json.NewDecoder(bufio.NewReader(gzr))
+
 	for dec.More() {
 		var rec record
 		if err := dec.Decode(&rec); err != nil {
 			log.Fatalf("Failed to decode record at position %d: %v", id, err)
 		}
 
+		// Extract title from the body (format is typically "Title: XXX Content: YYY")
+		title := ""
+		content := ""
+		if len(rec.Body) > 0 {
+			// Try to extract title and content
+			if titleStart := strings.Index(rec.Body, "Title: "); titleStart >= 0 {
+				titleStart += 7 // Length of "Title: "
+				titleEnd := strings.Index(rec.Body[titleStart:], " Content: ")
+				if titleEnd > 0 {
+					title = rec.Body[titleStart : titleStart+titleEnd]
+					contentStart := titleStart + titleEnd + 10 // Length of " Content: "
+					content = rec.Body[contentStart:]
+				}
+			}
+		}
+
 		pl := map[string]interface{}{
-			"title": rec.Title,
-			"url":   rec.URL,
+			"title": title,
+			"content": content,
+			"id": rec.ID,
 		}
 
 		// Convert map[string]interface{} to map[string]*pb.Value using the helper function
 		payload := pb.NewValueMap(pl)
 
+		// Use AllMiniLM field if available, otherwise fall back to Embedding field
+		var embedding []float32
+		if len(rec.AllMiniLM) > 0 {
+			embedding = rec.AllMiniLM
+		} else if len(rec.Embedding) > 0 {
+			embedding = rec.Embedding
+		}
+
+		// Check if embedding is empty or has zero length
+		if len(embedding) == 0 {
+			log.Printf("⚠️ Warning: Record %d has empty embedding, skipping", id)
+			skippedCount++
+			continue
+		}
+
+		// Check if embedding has the expected dimension
+		if len(embedding) != dim {
+			log.Printf("⚠️ Warning: Record %d has unexpected embedding dimension (expected %d, got %d), skipping",
+				id, dim, len(embedding))
+			skippedCount++
+			continue
+		}
+
 		points = append(points, &pb.PointStruct{
 			Id: &pb.PointId{PointIdOptions: &pb.PointId_Num{Num: id}},
 			Vectors: &pb.Vectors{
 				VectorsOptions: &pb.Vectors_Vector{
-					Vector: &pb.Vector{Data: rec.Embedding},
+					Vector: &pb.Vector{Data: embedding},
 				},
 			},
 			Payload: payload,
@@ -163,4 +190,7 @@ CollectionReady:
 	}
 	flush()
 	log.Printf("🎉 Successfully loaded %d vectors into Qdrant collection %q across %d batches", id, collection, batchCount)
+	if skippedCount > 0 {
+		log.Printf("⚠️ Skipped %d records due to empty or incorrectly dimensioned embeddings", skippedCount)
+	}
 }

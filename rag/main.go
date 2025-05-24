@@ -61,7 +61,7 @@ func main() {
 		//	log.Fatalf("Failed to index Wikipedia: %v", err)
 		//}
 		//log.Println("✅ Indexing complete")
-		load()
+		Load()
 	}
 
 	// Start an interactive session
@@ -84,6 +84,7 @@ func parseFlags() Config {
 	ollamaURL := flag.String("ollama-url", "http://localhost:11434", "Ollama server URL")
 	forceRecreate := flag.Bool("force-recreate", false, "Force recreate collection if dimensions mismatch")
 	testConnection := flag.Bool("test-connection", false, "Test Qdrant connection and exit")
+	testLoad := flag.Bool("test-load", false, "Test loading the wiki_minilm.ndjson.gz file and exit")
 
 	flag.Parse()
 
@@ -113,6 +114,13 @@ func parseFlags() Config {
 		if err := TestQdrantConnection(); err != nil {
 			log.Fatalf("❌ Connection test failed: %v", err)
 		}
+		os.Exit(0)
+	}
+
+	// Test loading if requested
+	if *testLoad {
+		log.Println("=== Testing Loading wiki_minilm.ndjson.gz ===")
+		Load()
 		os.Exit(0)
 	}
 
