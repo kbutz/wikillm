@@ -161,6 +161,7 @@ func processQuery(ctx context.Context, model llms.Model, ragPipeline *RAGPipelin
 	}
 
 	if len(docs) == 0 {
+		log.Println("Debug: No results found from vector store, querying model directly...")
 		// If no results found, ask the model directly
 		return llms.GenerateFromSinglePrompt(ctx, model, query)
 	}
@@ -181,6 +182,7 @@ func processQuery(ctx context.Context, model llms.Model, ragPipeline *RAGPipelin
 		}
 
 		contextBuilder.WriteString(fmt.Sprintf("%d. %s\n%s\n\n", i+1, title, content))
+		log.Printf("Debug: Context %d: %s\n content: %s\n", i+1, title, content)
 	}
 
 	contextBuilder.WriteString("Please provide a comprehensive answer based on the context above. If the context doesn't contain enough information, mention that.")
