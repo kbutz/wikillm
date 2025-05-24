@@ -74,14 +74,14 @@ bunzip2 simplewiki-latest-pages-articles.xml.bz2
 # Build the application
 go mod download
 go mod tidy
-go build -o wikillm-rag ./main.go
+go build -o wikillm-rag .
 
 # For a clean build (optional)
 go clean -cache
 rm -f go.sum
 go mod download
 go mod tidy
-go build -o wikillm-rag ./main.go
+go build -o wikillm-rag .
 
 # Run with Ollama (default - uses llama3.2)
 ./wikillm-rag
@@ -111,7 +111,7 @@ go build -o wikillm-rag ./main.go
    ```bash
    go mod download
    go mod tidy
-   go build -o wikillm-rag ./main.go
+   go build -o wikillm-rag .
    ```
 5. Run with LM Studio as the provider:
 ```bash
@@ -186,3 +186,4 @@ Use different providers for LLM and embeddings:
 4. **Memory Issues**: Reduce batch size for large Wikipedia dumps
 5. **Model Not Found Error**: If you see `model "nomic-embed-text" not found`, run `ollama pull nomic-embed-text` to download the embedding model
 6. **Collection Doesn't Exist Error**: If you see `Collection 'wikipedia' doesn't exist`, make sure Qdrant is running and accessible at the URL specified by `-qdrant-url` (default: http://localhost:6333). The application will attempt to create the collection automatically when indexing Wikipedia data.
+7. **Undefined Symbol Errors**: If you see errors like `undefined: GetProvider` or `undefined: RAGPipeline`, make sure you're building the entire package, not just main.go. Use `go build -o wikillm-rag .` or `go run .` instead of `go build -o wikillm-rag ./main.go` or `go run main.go`.
