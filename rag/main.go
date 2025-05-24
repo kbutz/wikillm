@@ -76,11 +76,13 @@ func parseFlags() Config {
 	embeddingProvider := flag.String("embedding-provider", "", "Provider for embeddings (defaults to model provider)")
 	wikipediaPath := flag.String("wikipedia", "", "Path to the Wikipedia dump file")
 	qdrantURL := flag.String("qdrant-url", "http://localhost:6333", "URL for the Qdrant vector database")
-	qdrantCollection := flag.String("qdrant-collection", "wikipedia", "Collection name for Qdrant")
+	// value from load() is wiki_minilm, value from the original langchain embedder was wikipedia
+	qdrantCollection := flag.String("qdrant-collection", "wiki_minilm", "Collection name for Qdrant")
 	searchLimit := flag.Int("limit", 5, "Maximum number of search results")
 	openaiKey := flag.String("openai-key", "", "OpenAI API key (or set OPENAI_API_KEY env var)")
 	ollamaURL := flag.String("ollama-url", "http://localhost:11434", "Ollama server URL")
 	forceRecreate := flag.Bool("force-recreate", false, "Force recreate collection if dimensions mismatch")
+	testConnection := flag.Bool("test-connection", false, "Test Qdrant connection and exit")
 
 	flag.Parse()
 
@@ -90,7 +92,7 @@ func parseFlags() Config {
 		apiKey = os.Getenv("OPENAI_API_KEY")
 	}
 
-	return Config{
+	config := Config{
 		ModelName:            *modelName,
 		ModelProvider:        *modelProvider,
 		EmbeddingModel:       *embeddingModel,
@@ -103,6 +105,17 @@ func parseFlags() Config {
 		OllamaURL:            *ollamaURL,
 		ForceRecreate:        *forceRecreate,
 	}
+
+	// Test connection if requested
+	if *testConnection {
+		log.Println("=== Qdrant Connection Test ===")
+		if err := TestQdrantConnection(); err != nil {
+			log.Fatalf("❌ Connection test failed: %v", err)
+		}
+		os.Exit(0)
+	}
+
+	return config
 }
 
 // startInteractiveSession provides an interactive chat interface
