@@ -26,6 +26,50 @@ type Config struct {
 	OpenAIAPIKey         string // OpenAI API key for LM Studio compatibility
 	OllamaURL            string // Ollama server URL
 	ForceRecreate        bool   // Force recreate collection if dimensions mismatch
+	Load                 bool   // Load embeddings from file
+}
+
+// parseFlags parses command line flags and returns a Config struct
+func parseFlags() Config {
+	modelName := flag.String("model", "llama3.2", "Name of the LLM model to use")
+	modelProvider := flag.String("provider", "ollama", "Model provider to use (ollama, openai, lmstudio)")
+	// Previously nomic-embed-text, trying all-minilm
+	embeddingModel := flag.String("embedding-model", "all-minilm", "Name of the embedding model to use")
+	embeddingProvider := flag.String("embedding-provider", "", "Provider for embeddings (defaults to model provider)")
+	wikipediaPath := flag.String("wikipedia", "", "Path to the Wikipedia dump file")
+	qdrantURL := flag.String("qdrant-url", "http://localhost:6333", "URL for the Qdrant vector database")
+	// value from load() is wiki_minilm, value from the original langchain embedder was wikipedia
+	qdrantCollection := flag.String("qdrant-collection", "wiki_minilm", "Collection name for Qdrant")
+	searchLimit := flag.Int("limit", 5, "Maximum number of search results")
+	openaiKey := flag.String("openai-key", "", "OpenAI API key (or set OPENAI_API_KEY env var)")
+	ollamaURL := flag.String("ollama-url", "http://localhost:11434", "Ollama server URL")
+	forceRecreate := flag.Bool("force-recreate", false, "Force recreate collection if dimensions mismatch")
+	load := flag.Bool("load", false, "Test loading the wiki_minilm.ndjson.gz file and exit")
+
+	flag.Parse()
+
+	// Get API key from environment if not provided
+	apiKey := *openaiKey
+	if apiKey == "" {
+		apiKey = os.Getenv("OPENAI_API_KEY")
+	}
+
+	config := Config{
+		ModelName:            *modelName,
+		ModelProvider:        *modelProvider,
+		EmbeddingModel:       *embeddingModel,
+		EmbeddingProvider:    *embeddingProvider,
+		WikipediaPath:        *wikipediaPath,
+		QdrantURL:            *qdrantURL,
+		QdrantCollectionName: *qdrantCollection,
+		SearchLimit:          *searchLimit,
+		OpenAIAPIKey:         apiKey,
+		OllamaURL:            *ollamaURL,
+		ForceRecreate:        *forceRecreate,
+		Load:                 *load,
+	}
+
+	return config
 }
 
 func main() {
@@ -36,6 +80,7 @@ func main() {
 	provider := GetProvider(config)
 
 	log.Printf("Initializing %s model: %s", provider.Name(), config.ModelName)
+	log.Printf("Using embedding model: %s (%s)", config.EmbeddingModel, config.EmbeddingProvider)
 	model, err := provider.CreateLLM(config)
 	if err != nil {
 		log.Fatalf("Failed to initialize model: %v", err)
@@ -54,7 +99,8 @@ func main() {
 		}
 	}()
 
-	// Index Wikipedia if a path is provided
+	// Index from Wikipedia XML Dump if a path is provided
+	// This will have to create the embeddings first and is extremely compute intensive
 	if config.WikipediaPath != "" {
 		log.Printf("Indexing Wikipedia dump: %s", config.WikipediaPath)
 		if err := ragPipeline.IndexWikipediaDump(config.WikipediaPath); err != nil {
@@ -63,45 +109,16 @@ func main() {
 		log.Println("✅ Indexing complete")
 	}
 
+	// Load embeddings directly from file if specified
+	if config.Load {
+		// Load embeddings from file
+		log.Println("Loading embeddings from file...")
+		loadFromEmbeddings()
+		log.Println("✅ Loading complete")
+	}
+
 	// Start an interactive session
 	startInteractiveSession(model, ragPipeline, config)
-}
-
-// parseFlags parses command line flags and returns a Config struct
-func parseFlags() Config {
-	modelName := flag.String("model", "llama3.2", "Name of the LLM model to use")
-	modelProvider := flag.String("provider", "ollama", "Model provider to use (ollama, openai, lmstudio)")
-	embeddingModel := flag.String("embedding-model", "nomic-embed-text", "Name of the embedding model to use")
-	embeddingProvider := flag.String("embedding-provider", "", "Provider for embeddings (defaults to model provider)")
-	wikipediaPath := flag.String("wikipedia", "", "Path to the Wikipedia dump file")
-	qdrantURL := flag.String("qdrant-url", "http://localhost:6333", "URL for the Qdrant vector database")
-	qdrantCollection := flag.String("qdrant-collection", "wikipedia", "Collection name for Qdrant")
-	searchLimit := flag.Int("limit", 5, "Maximum number of search results")
-	openaiKey := flag.String("openai-key", "", "OpenAI API key (or set OPENAI_API_KEY env var)")
-	ollamaURL := flag.String("ollama-url", "http://localhost:11434", "Ollama server URL")
-	forceRecreate := flag.Bool("force-recreate", false, "Force recreate collection if dimensions mismatch")
-
-	flag.Parse()
-
-	// Get API key from environment if not provided
-	apiKey := *openaiKey
-	if apiKey == "" {
-		apiKey = os.Getenv("OPENAI_API_KEY")
-	}
-
-	return Config{
-		ModelName:            *modelName,
-		ModelProvider:        *modelProvider,
-		EmbeddingModel:       *embeddingModel,
-		EmbeddingProvider:    *embeddingProvider,
-		WikipediaPath:        *wikipediaPath,
-		QdrantURL:            *qdrantURL,
-		QdrantCollectionName: *qdrantCollection,
-		SearchLimit:          *searchLimit,
-		OpenAIAPIKey:         apiKey,
-		OllamaURL:            *ollamaURL,
-		ForceRecreate:        *forceRecreate,
-	}
 }
 
 // startInteractiveSession provides an interactive chat interface

@@ -57,3 +57,12 @@ Temporary Items
 simplewiki-latest-pages-articles.xml
 simplewiki-latest-pages-articles.xml.bz2
 /wikipedia_index/
+
+*.bz
+*.bz2
+*.gz
+*.zip
+*.tar
+*.tgz
+*.tar.gz
+*.tar.bz2
