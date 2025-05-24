@@ -72,7 +72,8 @@ func main() {
 func parseFlags() Config {
 	modelName := flag.String("model", "llama3.2", "Name of the LLM model to use")
 	modelProvider := flag.String("provider", "ollama", "Model provider to use (ollama, openai, lmstudio)")
-	embeddingModel := flag.String("embedding-model", "nomic-embed-text", "Name of the embedding model to use")
+	// Previously nomic-embed-text, trying all-minilm
+	embeddingModel := flag.String("embedding-model", "all-minilm", "Name of the embedding model to use")
 	embeddingProvider := flag.String("embedding-provider", "", "Provider for embeddings (defaults to model provider)")
 	wikipediaPath := flag.String("wikipedia", "", "Path to the Wikipedia dump file")
 	qdrantURL := flag.String("qdrant-url", "http://localhost:6333", "URL for the Qdrant vector database")

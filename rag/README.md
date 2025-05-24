@@ -27,7 +27,7 @@ A Retrieval-Augmented Generation (RAG) system for querying Wikipedia content usi
 1. **Go 1.21+** installed
 2. **Qdrant** vector database running:
    ```bash
-   docker run -p 6333:6333 qdrant/qdrant
+   docker run -p 6333:6333 -p 6334:6334 qdrant/qdrant
    ```
 
 3. **Choose your LLM provider**:
@@ -54,7 +54,7 @@ A Retrieval-Augmented Generation (RAG) system for querying Wikipedia content usi
    export OPENAI_API_KEY="lm-studio"
    ```
 
-### Getting Wikipedia Data
+### Getting Wikipedia Data via Dump
 
 You'll need a Wikipedia dump file to create the index. You can download one from:
 https://dumps.wikimedia.org/
@@ -67,6 +67,10 @@ After downloading, extract the bz2 file:
 ```bash
 bunzip2 simplewiki-latest-pages-articles.xml.bz2
 ```
+
+### Getting Wikipedia Data via Embeddings
+
+https://huggingface.co/datasets/Supabase/wikipedia-en-embeddings/blob/main/wiki_gte.ndjson.gz
 
 ### Build and Run
 
