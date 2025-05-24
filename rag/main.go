@@ -56,11 +56,12 @@ func main() {
 
 	// Index Wikipedia if a path is provided
 	if config.WikipediaPath != "" {
-		log.Printf("Indexing Wikipedia dump: %s", config.WikipediaPath)
-		if err := ragPipeline.IndexWikipediaDump(config.WikipediaPath); err != nil {
-			log.Fatalf("Failed to index Wikipedia: %v", err)
-		}
-		log.Println("✅ Indexing complete")
+		//log.Printf("Indexing Wikipedia dump: %s", config.WikipediaPath)
+		//if err := ragPipeline.IndexWikipediaDump(config.WikipediaPath); err != nil {
+		//	log.Fatalf("Failed to index Wikipedia: %v", err)
+		//}
+		//log.Println("✅ Indexing complete")
+		load()
 	}
 
 	// Start an interactive session
