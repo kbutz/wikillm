@@ -26,46 +26,7 @@ type Config struct {
 	OpenAIAPIKey         string // OpenAI API key for LM Studio compatibility
 	OllamaURL            string // Ollama server URL
 	ForceRecreate        bool   // Force recreate collection if dimensions mismatch
-}
-
-func main() {
-	// Parse configuration
-	config := parseFlags()
-
-	// Get provider and create model
-	provider := GetProvider(config)
-
-	log.Printf("Initializing %s model: %s", provider.Name(), config.ModelName)
-	model, err := provider.CreateLLM(config)
-	if err != nil {
-		log.Fatalf("Failed to initialize model: %v", err)
-	}
-
-	// Initialize RAG pipeline
-	log.Println("Initializing RAG pipeline...")
-	ragPipeline, err := NewRAGPipeline(config)
-	if err != nil {
-		log.Fatalf("Failed to initialize RAG pipeline: %v", err)
-	}
-	defer func() {
-		err = ragPipeline.Close()
-		if err != nil {
-			log.Printf("Closing RAG pipeline: %v", err)
-		}
-	}()
-
-	// Index Wikipedia if a path is provided
-	if config.WikipediaPath != "" {
-		//log.Printf("Indexing Wikipedia dump: %s", config.WikipediaPath)
-		//if err := ragPipeline.IndexWikipediaDump(config.WikipediaPath); err != nil {
-		//	log.Fatalf("Failed to index Wikipedia: %v", err)
-		//}
-		//log.Println("✅ Indexing complete")
-		Load()
-	}
-
-	// Start an interactive session
-	startInteractiveSession(model, ragPipeline, config)
+	Load                 bool   // Load embeddings from file
 }
 
 // parseFlags parses command line flags and returns a Config struct
@@ -83,8 +44,7 @@ func parseFlags() Config {
 	openaiKey := flag.String("openai-key", "", "OpenAI API key (or set OPENAI_API_KEY env var)")
 	ollamaURL := flag.String("ollama-url", "http://localhost:11434", "Ollama server URL")
 	forceRecreate := flag.Bool("force-recreate", false, "Force recreate collection if dimensions mismatch")
-	testConnection := flag.Bool("test-connection", false, "Test Qdrant connection and exit")
-	testLoad := flag.Bool("test-load", false, "Test loading the wiki_minilm.ndjson.gz file and exit")
+	load := flag.Bool("load", false, "Test loading the wiki_minilm.ndjson.gz file and exit")
 
 	flag.Parse()
 
@@ -106,25 +66,59 @@ func parseFlags() Config {
 		OpenAIAPIKey:         apiKey,
 		OllamaURL:            *ollamaURL,
 		ForceRecreate:        *forceRecreate,
-	}
-
-	// Test connection if requested
-	if *testConnection {
-		log.Println("=== Qdrant Connection Test ===")
-		if err := TestQdrantConnection(); err != nil {
-			log.Fatalf("❌ Connection test failed: %v", err)
-		}
-		os.Exit(0)
-	}
-
-	// Test loading if requested
-	if *testLoad {
-		log.Println("=== Testing Loading wiki_minilm.ndjson.gz ===")
-		Load()
-		os.Exit(0)
+		Load:                 *load,
 	}
 
 	return config
+}
+
+func main() {
+	// Parse configuration
+	config := parseFlags()
+
+	// Get provider and create model
+	provider := GetProvider(config)
+
+	log.Printf("Initializing %s model: %s", provider.Name(), config.ModelName)
+	log.Printf("Using embedding model: %s (%s)", config.EmbeddingModel, config.EmbeddingProvider)
+	model, err := provider.CreateLLM(config)
+	if err != nil {
+		log.Fatalf("Failed to initialize model: %v", err)
+	}
+
+	// Initialize RAG pipeline
+	log.Println("Initializing RAG pipeline...")
+	ragPipeline, err := NewRAGPipeline(config)
+	if err != nil {
+		log.Fatalf("Failed to initialize RAG pipeline: %v", err)
+	}
+	defer func() {
+		err = ragPipeline.Close()
+		if err != nil {
+			log.Printf("Closing RAG pipeline: %v", err)
+		}
+	}()
+
+	// Index from Wikipedia XML Dump if a path is provided
+	// This will have to create the embeddings first and is extremely compute intensive
+	if config.WikipediaPath != "" {
+		log.Printf("Indexing Wikipedia dump: %s", config.WikipediaPath)
+		if err := ragPipeline.IndexWikipediaDump(config.WikipediaPath); err != nil {
+			log.Fatalf("Failed to index Wikipedia: %v", err)
+		}
+		log.Println("✅ Indexing complete")
+	}
+
+	// Load embeddings directly from file if specified
+	if config.Load {
+		// Load embeddings from file
+		log.Println("Loading embeddings from file...")
+		loadFromEmbeddings()
+		log.Println("✅ Loading complete")
+	}
+
+	// Start an interactive session
+	startInteractiveSession(model, ragPipeline, config)
 }
 
 // startInteractiveSession provides an interactive chat interface

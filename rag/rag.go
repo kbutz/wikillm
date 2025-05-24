@@ -91,11 +91,19 @@ func (r *RAGPipeline) ProcessBatch(ctx context.Context, documents []schema.Docum
 // Search searches for documents similar to the query using the new API
 func (r *RAGPipeline) Search(ctx context.Context, query string, limit int) ([]schema.Document, error) {
 	// Use the new SimilaritySearch method
-	docs, err := r.vectorStore.SimilaritySearch(ctx, query, limit,
-		vectorstores.WithScoreThreshold(0.7), // Adjust threshold as needed
-	)
+	log.Printf("Debug: Search query: %s", query)
+	docs, err := r.vectorStore.
+		SimilaritySearch(ctx, query, limit, vectorstores.WithScoreThreshold(0.3)) // Lowered threshold to allow more matches
+
 	if err != nil {
 		return nil, fmt.Errorf("failed to search: %w", err)
+	}
+
+	// Log the number of results and their scores for debugging
+	log.Printf("Debug: Found %d results from vector store", len(docs))
+	for i, doc := range docs {
+		log.Printf("Debug: Result %d - Score: %.4f, Title: %s",
+			i+1, doc.Score, doc.Metadata["title"])
 	}
 
 	return docs, nil
