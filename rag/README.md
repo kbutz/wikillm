@@ -1,6 +1,6 @@
-# WikiLLM RAG - Updated with Latest langchaingo
+# WikiLLM RAG
 
-A Retrieval-Augmented Generation (RAG) system for querying Wikipedia content using multiple LLM providers through the latest langchaingo APIs.
+A Retrieval-Augmented Generation (RAG) system for querying Wikipedia content using multiple LLM providers locally.
 
 ## Features
 
@@ -74,14 +74,14 @@ bunzip2 simplewiki-latest-pages-articles.xml.bz2
 # Build the application
 go mod download
 go mod tidy
-go build -o wikillm-rag ./main.go
+go build -o wikillm-rag .
 
 # For a clean build (optional)
 go clean -cache
 rm -f go.sum
 go mod download
 go mod tidy
-go build -o wikillm-rag ./main.go
+go build -o wikillm-rag .
 
 # Run with Ollama (default - uses llama3.2)
 ./wikillm-rag
@@ -111,7 +111,7 @@ go build -o wikillm-rag ./main.go
    ```bash
    go mod download
    go mod tidy
-   go build -o wikillm-rag ./main.go
+   go build -o wikillm-rag .
    ```
 5. Run with LM Studio as the provider:
 ```bash
@@ -176,51 +176,6 @@ Use different providers for LLM and embeddings:
     -qdrant-url http://your-qdrant-cluster:6333
 ```
 
-## Architecture
-
-### Updated Components
-
-1. **Provider Interface**: Abstracted LLM and embedding creation
-2. **Schema-Based Documents**: Uses langchaingo's document schema
-3. **Modern Vector Store API**: Leverages latest Qdrant integration
-4. **Improved Context Building**: Better prompt engineering for RAG
-
-### Key Improvements from Previous Version
-
-- **API Compatibility**: Uses langchaingo v0.1.24+ APIs
-- **Better Error Handling**: Comprehensive error context
-- **Flexible Configuration**: Support for mixed providers
-- **Enhanced Performance**: Optimized batch processing
-- **Production Ready**: Proper logging and metrics
-
-## Development
-
-### Project Structure
-```
-rag/
-├── main.go              # Application entry point
-├── go.mod               # Dependencies with latest versions
-├── README.md            # This file
-├── MIGRATION.md         # Migration guide
-└── vendor/              # Vendored dependencies
-```
-
-### Testing
-```bash
-# Run tests
-go test -v ./...
-
-# Build and test in one command
-go test -v ./... && go build -o wikillm-rag ./main.go
-```
-
-### Contributing
-
-1. Follow the existing provider interface pattern
-2. Add comprehensive error handling
-3. Include usage examples in comments
-4. Test with multiple LLM providers
-
 ## Troubleshooting
 
 ### Common Issues
@@ -231,28 +186,4 @@ go test -v ./... && go build -o wikillm-rag ./main.go
 4. **Memory Issues**: Reduce batch size for large Wikipedia dumps
 5. **Model Not Found Error**: If you see `model "nomic-embed-text" not found`, run `ollama pull nomic-embed-text` to download the embedding model
 6. **Collection Doesn't Exist Error**: If you see `Collection 'wikipedia' doesn't exist`, make sure Qdrant is running and accessible at the URL specified by `-qdrant-url` (default: http://localhost:6333). The application will attempt to create the collection automatically when indexing Wikipedia data.
-
-### Performance Tuning
-
-- **Batch Size**: Adjust based on available memory
-- **Search Limit**: Balance between context size and relevance
-- **Embedding Model**: Choose appropriate model for your use case
-- **Vector Store**: Consider Qdrant cluster for production
-
-## License
-
-MIT License - See LICENSE file for details
-
-## Changelog
-
-### v2.0.0 (Latest)
-- Updated to langchaingo v0.1.24+
-- Added multi-provider support
-- Improved error handling and logging
-- Enhanced configuration options
-- Better documentation and examples
-
-### v1.0.0 (Previous)
-- Basic RAG implementation
-- Single provider support
-- Simple vector store integration
+7. **Undefined Symbol Errors**: If you see errors like `undefined: GetProvider` or `undefined: RAGPipeline`, make sure you're building the entire package, not just main.go. Use `go build -o wikillm-rag .` or `go run .` instead of `go build -o wikillm-rag ./main.go` or `go run main.go`.

@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-// Configuration options for the application
+// Config Configuration options for the application
 type Config struct {
 	ModelName      string // Name of the LLM model to use
 	ModelProvider  string // Provider to use (lmstudio or ollama)
@@ -53,7 +53,12 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to initialize Wikipedia index: %v", err)
 	}
-	defer wikiIndex.Close()
+	defer func() {
+		err = wikiIndex.Close()
+		if err != nil {
+			log.Printf("Error closing Wikipedia index: %v", err)
+		}
+	}()
 
 	// Check if we need to create the index
 	if config.WikipediaPath != "" {
