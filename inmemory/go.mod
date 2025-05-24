@@ -1,4 +1,4 @@
-module github.com/kbutz/wikillm/naivelocal
+module github.com/kbutz/wikillm/inmemory
 
 go 1.24
 
