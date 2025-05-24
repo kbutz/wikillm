@@ -49,7 +49,9 @@ func main() {
 	}
 	defer func() {
 		err = ragPipeline.Close()
-		log.Printf("Closing RAG pipeline: %v", err)
+		if err != nil {
+			log.Printf("Closing RAG pipeline: %v", err)
+		}
 	}()
 
 	// Index Wikipedia if a path is provided
