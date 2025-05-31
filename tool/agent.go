@@ -8,6 +8,8 @@ import (
 	"strings"
 )
 
+//go:generate mockgen -source=agent.go -package=main -destination=./mocks/agent_mock.go
+
 // Tool defines the interface for tools that the agent can use
 type Tool interface {
 	// Name returns the name of the tool
