@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 )
 
@@ -44,14 +45,24 @@ func (a *Agent) ProcessQuery(ctx context.Context, query string) (string, error) 
 	promptBuilder.WriteString("You are an AI assistant with access to the following tools:\n\n")
 
 	for _, tool := range a.tools {
-		promptBuilder.WriteString(fmt.Sprintf("- %s: %s\n", tool.Name(), tool.Description()))
+		promptBuilder.WriteString(fmt.Sprintf("### Tool: %s\n%s\n\n", tool.Name(), tool.Description()))
 	}
 
-	promptBuilder.WriteString("\nTo use a tool, respond with a JSON object in the following format:\n")
-	promptBuilder.WriteString("```json\n{\"tool\": \"tool_name\", \"args\": \"tool arguments\"}\n```\n")
-	promptBuilder.WriteString("If you don't need to use a tool, just respond normally.\n\n")
+	promptBuilder.WriteString("\n## How to Use Tools\n\n")
+	promptBuilder.WriteString("To use a tool, respond with a JSON object in a code block:\n\n")
+	promptBuilder.WriteString("```json\n{\n  \"tool\": \"tool_name\",\n  \"args\": \"command and arguments\"\n}\n```\n\n")
+	promptBuilder.WriteString("### Important Notes:\n")
+	promptBuilder.WriteString("- Always use the exact tool name as shown above\n")
+	promptBuilder.WriteString("- The 'args' field should contain the complete command with all parameters\n")
+	promptBuilder.WriteString("- For the todo_list tool, include priority and time in the args string (e.g., \"add Buy milk priority:high time:30m\")\n")
+	promptBuilder.WriteString("- If you don't need to use a tool, just respond normally without JSON\n\n")
 	promptBuilder.WriteString("User query: " + query + "\n\n")
 	promptBuilder.WriteString("Your response:")
+	
+	// Add examples for complex queries
+	if strings.Contains(strings.ToLower(query), "todo") || strings.Contains(strings.ToLower(query), "task") {
+		promptBuilder.WriteString("\n\n(Hint: The user is asking about tasks. Use the todo_list tool if appropriate.)")
+	}
 
 	// Send the prompt to the LLM
 	response, err := a.model.Query(ctx, promptBuilder.String())
@@ -84,6 +95,7 @@ func (a *Agent) ProcessQuery(ctx context.Context, query string) (string, error) 
 	if err != nil {
 		return "", fmt.Errorf("error executing tool %s: %w", toolCall.Tool, err)
 	}
+	fmt.Printf("Tool %s executed with args: %s\nResult: %s\n", toolCall.Tool, toolCall.Args, toolResult)
 
 	// For all todo_list tool commands, return the result directly
 	// to avoid the LLM potentially replacing actual task content with placeholders
@@ -105,6 +117,8 @@ func (a *Agent) ProcessQuery(ctx context.Context, query string) (string, error) 
 		return "", fmt.Errorf("error querying LLM for final response: %w", err)
 	}
 
+	fmt.Println("Final response from LLM:", finalResponse)
+
 	return finalResponse, nil
 }
 
@@ -117,75 +131,128 @@ type ToolCall struct {
 // extractToolCall attempts to extract a tool call from the LLM response
 func extractToolCall(response string) (ToolCall, bool) {
 	// Look for JSON blocks in the response
-	jsonStart := strings.Index(response, "{")
-	jsonEnd := strings.LastIndex(response, "}")
-
-	if jsonStart == -1 || jsonEnd == -1 || jsonEnd < jsonStart {
-		return ToolCall{}, false
+	// Try to find JSON within code blocks first
+	var jsonStr string
+	
+	// Check for ```json blocks
+	jsonBlockRegex := regexp.MustCompile("```json\\s*\\n([\\s\\S]*?)\\n```")
+	if matches := jsonBlockRegex.FindStringSubmatch(response); len(matches) > 1 {
+		jsonStr = matches[1]
+	} else {
+		// Fall back to finding raw JSON
+		jsonStart := strings.Index(response, "{")
+		jsonEnd := strings.LastIndex(response, "}")
+		
+		if jsonStart == -1 || jsonEnd == -1 || jsonEnd < jsonStart {
+			return ToolCall{}, false
+		}
+		
+		jsonStr = response[jsonStart : jsonEnd+1]
 	}
-
-	jsonStr := response[jsonStart : jsonEnd+1]
 
 	// First try to unmarshal into a map to handle different args formats
 	var rawMap map[string]interface{}
 	err := json.Unmarshal([]byte(jsonStr), &rawMap)
-	if err != nil || rawMap["tool"] == "" {
+	if err != nil {
+		fmt.Printf("Error parsing JSON: %v\nJSON string: %s\n", err, jsonStr)
 		return ToolCall{}, false
 	}
 
 	// Extract the tool name
-	toolName, _ := rawMap["tool"].(string)
-	if toolName == "" {
+	toolName, ok := rawMap["tool"].(string)
+	if !ok || toolName == "" {
 		return ToolCall{}, false
 	}
 
 	// Handle different formats of args
 	var argsStr string
-	switch args := rawMap["args"].(type) {
-	case string:
-		// If args is already a string, use it directly
-		argsStr = args
-	case []interface{}:
-		// If args is an array, join the elements
-		if len(args) > 0 {
-			// First element is usually the command
-			command, _ := args[0].(string)
-			argsStr = command
-
-			// If there are more elements, they are the arguments
-			if len(args) > 1 {
-				// Join the rest of the arguments
-				for i := 1; i < len(args); i++ {
-					if arg, ok := args[i].(string); ok {
-						argsStr += " " + arg
-					}
-				}
-			}
-		}
-	case map[string]interface{}:
-		// If args is an object, extract the task
-		if task, ok := args["task"].(string); ok && task != "" {
-			argsStr = "add " + task
-		} else {
-			// If there's no task field or it's empty, try to construct from other fields
+	rawArgs, hasArgs := rawMap["args"]
+	
+	if !hasArgs {
+		// Some LLMs might use "arguments" instead of "args"
+		rawArgs, hasArgs = rawMap["arguments"]
+	}
+	
+	if !hasArgs {
+		argsStr = "" // No args provided
+	} else {
+		switch args := rawArgs.(type) {
+		case string:
+			// If args is already a string, use it directly
+			argsStr = strings.TrimSpace(args)
+		case []interface{}:
+			// If args is an array, join the elements
 			var parts []string
-			for _, v := range args {
-				if str, ok := v.(string); ok {
+			for _, arg := range args {
+				if str, ok := arg.(string); ok {
 					parts = append(parts, str)
-				} else if str, ok := v.(float64); ok {
-					parts = append(parts, fmt.Sprintf("%v", str))
+				} else {
+					parts = append(parts, fmt.Sprintf("%v", arg))
 				}
 			}
 			argsStr = strings.Join(parts, " ")
+		case map[string]interface{}:
+			// If args is an object, try to extract meaningful content
+			
+			// First check for specific fields that indicate the command
+			if command, ok := args["command"].(string); ok {
+				argsStr = command
+				
+				// Add task/content if present
+				if task, ok := args["task"].(string); ok && task != "" {
+					argsStr += " " + task
+				} else if content, ok := args["content"].(string); ok && content != "" {
+					argsStr += " " + content
+				} else if desc, ok := args["description"].(string); ok && desc != "" {
+					argsStr += " " + desc
+				}
+				
+				// Add priority if present
+				if priority, ok := args["priority"].(string); ok && priority != "" {
+					argsStr += " priority:" + priority
+				}
+				
+				// Add time if present
+				if timeStr, ok := args["time"].(string); ok && timeStr != "" {
+					argsStr += " time:" + timeStr
+				} else if timeMin, ok := args["time_minutes"].(float64); ok {
+					argsStr += fmt.Sprintf(" time:%dm", int(timeMin))
+				}
+			} else if task, ok := args["task"].(string); ok && task != "" {
+				// Just a task field - assume it's an add command
+				argsStr = "add " + task
+			} else {
+				// Fall back to concatenating all string values
+				var parts []string
+				
+				// Try to maintain some order: command-like fields first
+				commandFields := []string{"action", "command", "operation"}
+				for _, field := range commandFields {
+					if val, ok := args[field].(string); ok {
+						parts = append(parts, val)
+						delete(args, field)
+					}
+				}
+				
+				// Then add remaining fields
+				for _, v := range args {
+					if str, ok := v.(string); ok && str != "" {
+						parts = append(parts, str)
+					} else if num, ok := v.(float64); ok {
+						parts = append(parts, fmt.Sprintf("%v", num))
+					}
+				}
+				argsStr = strings.Join(parts, " ")
+			}
+		default:
+			// For any other type, convert to string
+			argsStr = fmt.Sprintf("%v", rawArgs)
 		}
-	default:
-		// For any other type, convert to string
-		argsStr = fmt.Sprintf("%v", args)
 	}
 
 	return ToolCall{
 		Tool: toolName,
-		Args: argsStr,
+		Args: strings.TrimSpace(argsStr),
 	}, true
 }
 

@@ -44,8 +44,8 @@ func main() {
 		}
 	}
 
-	// Initialize the to-do list tool
-	todoTool := NewTodoListTool(config.TodoFilePath)
+	// Initialize the improved to-do list tool
+	todoTool := NewImprovedTodoListTool(config.TodoFilePath)
 
 	// Initialize the agent with the to-do list tool
 	agent := NewAgent(model, []Tool{todoTool})
@@ -106,7 +106,8 @@ func startInteractiveSession(agent *Agent) {
 		}
 
 		elapsed := time.Since(startTime)
-		fmt.Printf("\nResponse (generated in %.2f seconds):\n%s\n", elapsed.Seconds(), response)
+		fmt.Printf("\nResponse:\n%s\n", response)
+		fmt.Printf("\nResponse generated in %.2f seconds.\n", elapsed.Seconds())
 	}
 }
 
