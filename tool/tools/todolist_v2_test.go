@@ -1,8 +1,7 @@
-package main
+package tools
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -28,7 +27,7 @@ func TestImprovedTodoListTool(t *testing.T) {
 	// Test adding tasks with priority and time
 	t.Run("AddTaskWithMetadata", func(t *testing.T) {
 		ctx := context.Background()
-		
+
 		// Add task with high priority and time estimate
 		result, err := tool.Execute(ctx, "add Buy groceries priority:high time:30m")
 		if err != nil {
@@ -37,19 +36,19 @@ func TestImprovedTodoListTool(t *testing.T) {
 		if !strings.Contains(result, "Buy groceries") {
 			t.Errorf("Result doesn't contain task description: %s", result)
 		}
-		
+
 		// Add task with just priority
 		result, err = tool.Execute(ctx, "add Call dentist priority:critical")
 		if err != nil {
 			t.Fatalf("Failed to add task: %v", err)
 		}
-		
+
 		// Add task with time in hours
 		result, err = tool.Execute(ctx, "add Study for exam time:2h")
 		if err != nil {
 			t.Fatalf("Failed to add task: %v", err)
 		}
-		
+
 		// Verify tasks were saved correctly
 		tasks, err := tool.loadTasks()
 		if err != nil {
@@ -58,7 +57,7 @@ func TestImprovedTodoListTool(t *testing.T) {
 		if len(tasks.Tasks) != 3 {
 			t.Errorf("Expected 3 tasks, got %d", len(tasks.Tasks))
 		}
-		
+
 		// Check first task
 		if tasks.Tasks[0].Description != "Buy groceries" {
 			t.Errorf("Expected 'Buy groceries', got '%s'", tasks.Tasks[0].Description)
@@ -69,12 +68,12 @@ func TestImprovedTodoListTool(t *testing.T) {
 		if tasks.Tasks[0].TimeEstimate != 30 {
 			t.Errorf("Expected 30 minutes, got %d", tasks.Tasks[0].TimeEstimate)
 		}
-		
+
 		// Check second task
 		if tasks.Tasks[1].Priority != PriorityCritical {
 			t.Errorf("Expected Critical priority, got %s", tasks.Tasks[1].Priority.String())
 		}
-		
+
 		// Check third task
 		if tasks.Tasks[2].TimeEstimate != 120 { // 2 hours = 120 minutes
 			t.Errorf("Expected 120 minutes, got %d", tasks.Tasks[2].TimeEstimate)
@@ -84,12 +83,12 @@ func TestImprovedTodoListTool(t *testing.T) {
 	// Test listing by priority
 	t.Run("ListByPriority", func(t *testing.T) {
 		ctx := context.Background()
-		
+
 		result, err := tool.Execute(ctx, "list priority")
 		if err != nil {
 			t.Fatalf("Failed to list tasks by priority: %v", err)
 		}
-		
+
 		// Should show critical task first
 		lines := strings.Split(result, "\n")
 		foundCritical := false
@@ -111,7 +110,7 @@ func TestImprovedTodoListTool(t *testing.T) {
 	// Test completing tasks
 	t.Run("CompleteTask", func(t *testing.T) {
 		ctx := context.Background()
-		
+
 		// Complete the first active task
 		result, err := tool.Execute(ctx, "complete 1")
 		if err != nil {
@@ -120,13 +119,13 @@ func TestImprovedTodoListTool(t *testing.T) {
 		if !strings.Contains(result, "Completed task") {
 			t.Errorf("Unexpected result: %s", result)
 		}
-		
+
 		// Verify task was marked as completed
 		tasks, err := tool.loadTasks()
 		if err != nil {
 			t.Fatalf("Failed to load tasks: %v", err)
 		}
-		
+
 		completedCount := 0
 		for _, task := range tasks.Tasks {
 			if task.Completed {
@@ -136,7 +135,7 @@ func TestImprovedTodoListTool(t *testing.T) {
 		if completedCount != 1 {
 			t.Errorf("Expected 1 completed task, got %d", completedCount)
 		}
-		
+
 		// List should now show only 2 active tasks
 		result, err = tool.Execute(ctx, "list")
 		if err != nil {
@@ -150,7 +149,7 @@ func TestImprovedTodoListTool(t *testing.T) {
 	// Test clearing completed tasks
 	t.Run("ClearCompleted", func(t *testing.T) {
 		ctx := context.Background()
-		
+
 		// Clear only completed tasks
 		result, err := tool.Execute(ctx, "clear completed")
 		if err != nil {
@@ -159,17 +158,17 @@ func TestImprovedTodoListTool(t *testing.T) {
 		if !strings.Contains(result, "Cleared all completed tasks") {
 			t.Errorf("Unexpected result: %s", result)
 		}
-		
+
 		// Verify only active tasks remain
 		tasks, err := tool.loadTasks()
 		if err != nil {
 			t.Fatalf("Failed to load tasks: %v", err)
 		}
-		
+
 		if len(tasks.Tasks) != 2 {
 			t.Errorf("Expected 2 tasks after clearing completed, got %d", len(tasks.Tasks))
 		}
-		
+
 		for _, task := range tasks.Tasks {
 			if task.Completed {
 				t.Error("Found completed task after clearing completed tasks")
@@ -180,12 +179,12 @@ func TestImprovedTodoListTool(t *testing.T) {
 	// Test time summary
 	t.Run("TimeSummary", func(t *testing.T) {
 		ctx := context.Background()
-		
+
 		result, err := tool.Execute(ctx, "list")
 		if err != nil {
 			t.Fatalf("Failed to list tasks: %v", err)
 		}
-		
+
 		// Should show total time estimate
 		if !strings.Contains(result, "total time") {
 			t.Error("Expected time summary in listing")
@@ -196,25 +195,25 @@ func TestImprovedTodoListTool(t *testing.T) {
 	t.Run("MigrateOldFormat", func(t *testing.T) {
 		// Create a new tool with a different file
 		oldFormatFile := filepath.Join(tempDir, "old-format.txt")
-		
+
 		// Write old format data
 		oldData := "Task 1\nTask 2\nTask 3"
 		err := os.WriteFile(oldFormatFile, []byte(oldData), 0644)
 		if err != nil {
 			t.Fatalf("Failed to write old format file: %v", err)
 		}
-		
+
 		// Create tool and load tasks
 		oldTool := NewImprovedTodoListTool(oldFormatFile)
 		tasks, err := oldTool.loadTasks()
 		if err != nil {
 			t.Fatalf("Failed to migrate old format: %v", err)
 		}
-		
+
 		if len(tasks.Tasks) != 3 {
 			t.Errorf("Expected 3 migrated tasks, got %d", len(tasks.Tasks))
 		}
-		
+
 		// Verify tasks have default values
 		for i, task := range tasks.Tasks {
 			expectedDesc := fmt.Sprintf("Task %d", i+1)
@@ -254,7 +253,7 @@ func TestExtractToolCallImproved(t *testing.T) {
 			found:    true,
 		},
 		{
-			name: "Args as object with command",
+			name:     "Args as object with command",
 			response: `{"tool": "todo_list", "args": {"command": "add", "task": "Call mom", "priority": "high"}}`,
 			expected: ToolCall{Tool: "todo_list", Args: "add Call mom priority:high"},
 			found:    true,
@@ -287,12 +286,12 @@ func TestExtractToolCallImproved(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			result, found := extractToolCall(tc.response)
-			
+			result, found := ExtractToolCall(tc.response)
+
 			if found != tc.found {
 				t.Errorf("Expected found=%v, got %v", tc.found, found)
 			}
-			
+
 			if found && (result.Tool != tc.expected.Tool || result.Args != tc.expected.Args) {
 				t.Errorf("Expected %+v, got %+v", tc.expected, result)
 			}
@@ -320,7 +319,7 @@ func TestTaskPriority(t *testing.T) {
 		{"crit", PriorityCritical},
 		{"4", PriorityCritical},
 		{"unknown", PriorityMedium}, // Default
-		{"", PriorityMedium},         // Default
+		{"", PriorityMedium},        // Default
 	}
 
 	for _, tc := range testCases {
@@ -336,13 +335,13 @@ func TestTaskPriority(t *testing.T) {
 // TestParseAddCommand tests the command parsing
 func TestParseAddCommand(t *testing.T) {
 	tool := NewImprovedTodoListTool("test.json")
-	
+
 	testCases := []struct {
-		name         string
-		args         string
-		expDesc      string
-		expPriority  TaskPriority
-		expTime      int
+		name        string
+		args        string
+		expDesc     string
+		expPriority TaskPriority
+		expTime     int
 	}{
 		{
 			name:        "Simple task",
@@ -391,7 +390,7 @@ func TestParseAddCommand(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			desc, priority, time := tool.parseAddCommand(tc.args)
-			
+
 			if desc != tc.expDesc {
 				t.Errorf("Description: got %q, want %q", desc, tc.expDesc)
 			}

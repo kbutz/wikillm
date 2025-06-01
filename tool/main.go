@@ -11,6 +11,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/kbutz/wikillm/tool/tools"
 )
 
 // Config Configuration options for the application
@@ -44,8 +46,8 @@ func main() {
 		}
 	}
 
-	// Initialize the improved to-do list tool
-	todoTool := NewImprovedTodoListTool(config.TodoFilePath)
+	// Initialize the V2 to-do list tool
+	todoTool := tools.NewImprovedTodoListTool(config.TodoFilePath)
 
 	// Initialize the agent with the to-do list tool
 	agent := NewAgent(model, []Tool{todoTool})
@@ -55,7 +57,7 @@ func main() {
 		go startHTTPServer(config.Port, agent)
 	}
 
-	// Start interactive session
+	// Start the interactive session
 	startInteractiveSession(agent)
 }
 

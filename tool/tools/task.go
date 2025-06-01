@@ -1,4 +1,4 @@
-package main
+package tools
 
 import (
 	"encoding/json"
@@ -50,13 +50,13 @@ func ParsePriority(s string) TaskPriority {
 
 // Task represents a TODO item with metadata
 type Task struct {
-	ID          string        `json:"id"`
-	Description string        `json:"description"`
-	Priority    TaskPriority  `json:"priority"`
+	ID           string       `json:"id"`
+	Description  string       `json:"description"`
+	Priority     TaskPriority `json:"priority"`
 	TimeEstimate int          `json:"time_estimate_minutes,omitempty"` // Time estimate in minutes
-	CreatedAt   time.Time     `json:"created_at"`
-	CompletedAt *time.Time    `json:"completed_at,omitempty"`
-	Completed   bool          `json:"completed"`
+	CreatedAt    time.Time    `json:"created_at"`
+	CompletedAt  *time.Time   `json:"completed_at,omitempty"`
+	Completed    bool         `json:"completed"`
 }
 
 // NewTask creates a new task with the given description
@@ -76,7 +76,7 @@ func (t *Task) String() string {
 	if t.Completed {
 		status = "[✓]"
 	}
-	
+
 	timeStr := ""
 	if t.TimeEstimate > 0 {
 		hours := t.TimeEstimate / 60
@@ -87,7 +87,7 @@ func (t *Task) String() string {
 			timeStr = fmt.Sprintf(" (~%dm)", minutes)
 		}
 	}
-	
+
 	return fmt.Sprintf("%s %s [%s]%s", status, t.Description, t.Priority.String(), timeStr)
 }
 
@@ -106,7 +106,7 @@ func (tl *TaskList) Remove(index int) error {
 	if index < 1 || index > len(tl.Tasks) {
 		return fmt.Errorf("task index %d out of range (1-%d)", index, len(tl.Tasks))
 	}
-	
+
 	// Remove the task
 	tl.Tasks = append(tl.Tasks[:index-1], tl.Tasks[index:]...)
 	return nil
@@ -117,7 +117,7 @@ func (tl *TaskList) Complete(index int) error {
 	if index < 1 || index > len(tl.Tasks) {
 		return fmt.Errorf("task index %d out of range (1-%d)", index, len(tl.Tasks))
 	}
-	
+
 	now := time.Now()
 	tl.Tasks[index-1].Completed = true
 	tl.Tasks[index-1].CompletedAt = &now
@@ -138,7 +138,7 @@ func (tl *TaskList) GetActiveTasks() []Task {
 // GetTasksByPriority returns active tasks sorted by priority (highest first)
 func (tl *TaskList) GetTasksByPriority() []Task {
 	active := tl.GetActiveTasks()
-	
+
 	// Simple bubble sort by priority (descending)
 	for i := 0; i < len(active); i++ {
 		for j := i + 1; j < len(active); j++ {
@@ -147,7 +147,7 @@ func (tl *TaskList) GetTasksByPriority() []Task {
 			}
 		}
 	}
-	
+
 	return active
 }
 
