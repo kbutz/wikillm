@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"regexp"
@@ -38,12 +39,18 @@ Commands:
 - remove <number> - Remove a task
 - clear - Clear all tasks
 - clear completed - Clear only completed tasks
+- export - Export all task data as JSON for analysis
+- analyze priority - Get detailed priority analysis
+- analyze summary - Get a comprehensive task summary
+- analyze time - Get time estimate analysis
 
 Examples:
 - add Buy groceries priority:high time:30m
 - add Call dentist
 - complete 1
-- list priority`
+- list priority
+- analyze priority
+- export`
 }
 
 // Execute runs the tool with the given arguments and returns the result
@@ -81,6 +88,13 @@ func (t *ImprovedTodoListTool) Execute(ctx context.Context, args string) (string
 			clearType = strings.ToLower(parts[1])
 		}
 		return t.clearTasks(clearType)
+	case "export":
+		return t.exportTasks()
+	case "analyze":
+		if len(parts) < 2 {
+			return "", fmt.Errorf("analyze command requires a type (priority, summary, or time)")
+		}
+		return t.analyzeTasks(parts[1])
 	default:
 		return "", fmt.Errorf("unknown command: %s", command)
 	}
@@ -373,4 +387,270 @@ func (t *ImprovedTodoListTool) saveTasks(taskList *TaskList) error {
 	}
 
 	return nil
+}
+
+// exportTasks exports all tasks as JSON for LLM analysis
+func (t *ImprovedTodoListTool) exportTasks() (string, error) {
+	taskList, err := t.loadTasks()
+	if err != nil {
+		return "", err
+	}
+
+	// Create a structured export format
+	type ExportFormat struct {
+		TotalTasks     int     `json:"total_tasks"`
+		ActiveTasks    int     `json:"active_tasks"`
+		CompletedTasks int     `json:"completed_tasks"`
+		TotalTimeHours float64 `json:"total_time_hours"`
+		Tasks          []Task  `json:"tasks"`
+	}
+
+	activeTasks := taskList.GetActiveTasks()
+	totalTime := 0
+	for _, task := range activeTasks {
+		totalTime += task.TimeEstimate
+	}
+
+	export := ExportFormat{
+		TotalTasks:     len(taskList.Tasks),
+		ActiveTasks:    len(activeTasks),
+		CompletedTasks: len(taskList.Tasks) - len(activeTasks),
+		TotalTimeHours: float64(totalTime) / 60.0,
+		Tasks:          taskList.Tasks,
+	}
+
+	data, err := json.MarshalIndent(export, "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("error marshaling export data: %w", err)
+	}
+
+	return string(data), nil
+}
+
+// analyzeTasks provides various analyses of the task list
+func (t *ImprovedTodoListTool) analyzeTasks(analysisType string) (string, error) {
+	taskList, err := t.loadTasks()
+	if err != nil {
+		return "", err
+	}
+
+	switch strings.ToLower(analysisType) {
+	case "priority":
+		return t.analyzePriority(taskList)
+	case "summary":
+		return t.analyzeSummary(taskList)
+	case "time":
+		return t.analyzeTime(taskList)
+	default:
+		return "", fmt.Errorf("unknown analysis type: %s (use priority, summary, or time)", analysisType)
+	}
+}
+
+// analyzePriority provides detailed priority analysis
+func (t *ImprovedTodoListTool) analyzePriority(taskList *TaskList) (string, error) {
+	activeTasks := taskList.GetActiveTasks()
+	tasksByPriority := taskList.GetTasksByPriority()
+
+	// Count tasks by priority
+	priorityCounts := make(map[TaskPriority]int)
+	for _, task := range activeTasks {
+		priorityCounts[task.Priority]++
+	}
+
+	var result strings.Builder
+	result.WriteString("## Priority Analysis\n\n")
+
+	// Most important tasks
+	if len(tasksByPriority) > 0 {
+		result.WriteString("### Most Important Tasks:\n")
+		criticalCount := 0
+		for _, task := range tasksByPriority {
+			if task.Priority == PriorityCritical {
+				criticalCount++
+				result.WriteString(fmt.Sprintf("- **%s** (Critical)\n", task.Description))
+			}
+		}
+		if criticalCount == 0 {
+			// Show top 3 highest priority tasks
+			limit := 3
+			if len(tasksByPriority) < limit {
+				limit = len(tasksByPriority)
+			}
+			for i := 0; i < limit; i++ {
+				task := tasksByPriority[i]
+				result.WriteString(fmt.Sprintf("- **%s** (%s)\n", task.Description, task.Priority.String()))
+			}
+		}
+		result.WriteString("\n")
+	}
+
+	// Priority distribution
+	result.WriteString("### Priority Distribution:\n")
+	for _, priority := range []TaskPriority{PriorityCritical, PriorityHigh, PriorityMedium, PriorityLow} {
+		count := priorityCounts[priority]
+		if count > 0 {
+			percentage := float64(count) / float64(len(activeTasks)) * 100
+			result.WriteString(fmt.Sprintf("- %s: %d tasks (%.1f%%)\n", priority.String(), count, percentage))
+		}
+	}
+
+	return result.String(), nil
+}
+
+// analyzeSummary provides a comprehensive task summary
+func (t *ImprovedTodoListTool) analyzeSummary(taskList *TaskList) (string, error) {
+	activeTasks := taskList.GetActiveTasks()
+	tasksByPriority := taskList.GetTasksByPriority()
+
+	// Calculate statistics
+	totalTime := 0
+	tasksWithTime := 0
+	for _, task := range activeTasks {
+		if task.TimeEstimate > 0 {
+			tasksWithTime++
+			totalTime += task.TimeEstimate
+		}
+	}
+
+	var result strings.Builder
+	result.WriteString("## Task Summary\n\n")
+
+	// Overview
+	result.WriteString("### Overview:\n")
+	result.WriteString(fmt.Sprintf("- Total Tasks: %d (%d active, %d completed)\n",
+		len(taskList.Tasks), len(activeTasks), len(taskList.Tasks)-len(activeTasks)))
+
+	if totalTime > 0 {
+		hours := totalTime / 60
+		minutes := totalTime % 60
+		result.WriteString(fmt.Sprintf("- Estimated Time: %dh %dm for %d tasks\n", hours, minutes, tasksWithTime))
+		if tasksWithTime < len(activeTasks) {
+			result.WriteString(fmt.Sprintf("- Tasks without time estimates: %d\n", len(activeTasks)-tasksWithTime))
+		}
+	}
+	result.WriteString("\n")
+
+	// Top priorities
+	if len(tasksByPriority) > 0 {
+		result.WriteString("### Current Focus (Top 3 Priorities):\n")
+		limit := 3
+		if len(tasksByPriority) < limit {
+			limit = len(tasksByPriority)
+		}
+		for i := 0; i < limit; i++ {
+			task := tasksByPriority[i]
+			timeStr := ""
+			if task.TimeEstimate > 0 {
+				timeStr = fmt.Sprintf(" - %d minutes", task.TimeEstimate)
+			}
+			result.WriteString(fmt.Sprintf("%d. %s [%s]%s\n", i+1, task.Description, task.Priority.String(), timeStr))
+		}
+		result.WriteString("\n")
+	}
+
+	// Recent additions
+	if len(activeTasks) > 0 {
+		result.WriteString("### Recently Added:\n")
+		// Sort by creation time (newest first)
+		recentTasks := make([]Task, len(activeTasks))
+		copy(recentTasks, activeTasks)
+		for i := 0; i < len(recentTasks)-1; i++ {
+			for j := i + 1; j < len(recentTasks); j++ {
+				if recentTasks[j].CreatedAt.After(recentTasks[i].CreatedAt) {
+					recentTasks[i], recentTasks[j] = recentTasks[j], recentTasks[i]
+				}
+			}
+		}
+
+		limit := 3
+		if len(recentTasks) < limit {
+			limit = len(recentTasks)
+		}
+		for i := 0; i < limit; i++ {
+			task := recentTasks[i]
+			result.WriteString(fmt.Sprintf("- %s (added %s)\n", task.Description,
+				task.CreatedAt.Format("Jan 2, 3:04 PM")))
+		}
+	}
+
+	return result.String(), nil
+}
+
+// analyzeTime provides time-based analysis
+func (t *ImprovedTodoListTool) analyzeTime(taskList *TaskList) (string, error) {
+	activeTasks := taskList.GetActiveTasks()
+
+	// Group tasks by time estimates
+	quickTasks := []Task{}      // < 30 minutes
+	mediumTasks := []Task{}     // 30-60 minutes
+	longTasks := []Task{}       // > 60 minutes
+	noEstimateTasks := []Task{} // No time estimate
+
+	totalTime := 0
+	for _, task := range activeTasks {
+		if task.TimeEstimate == 0 {
+			noEstimateTasks = append(noEstimateTasks, task)
+		} else if task.TimeEstimate < 30 {
+			quickTasks = append(quickTasks, task)
+			totalTime += task.TimeEstimate
+		} else if task.TimeEstimate <= 60 {
+			mediumTasks = append(mediumTasks, task)
+			totalTime += task.TimeEstimate
+		} else {
+			longTasks = append(longTasks, task)
+			totalTime += task.TimeEstimate
+		}
+	}
+
+	var result strings.Builder
+	result.WriteString("## Time Analysis\n\n")
+
+	// Total time summary
+	if totalTime > 0 {
+		hours := totalTime / 60
+		minutes := totalTime % 60
+		result.WriteString(fmt.Sprintf("### Total Estimated Time: %dh %dm\n\n", hours, minutes))
+	}
+
+	// Quick wins
+	if len(quickTasks) > 0 {
+		result.WriteString("### Quick Wins (< 30 minutes):\n")
+		for _, task := range quickTasks {
+			result.WriteString(fmt.Sprintf("- %s (%d min) [%s]\n",
+				task.Description, task.TimeEstimate, task.Priority.String()))
+		}
+		result.WriteString("\n")
+	}
+
+	// Medium tasks
+	if len(mediumTasks) > 0 {
+		result.WriteString("### Medium Tasks (30-60 minutes):\n")
+		for _, task := range mediumTasks {
+			result.WriteString(fmt.Sprintf("- %s (%d min) [%s]\n",
+				task.Description, task.TimeEstimate, task.Priority.String()))
+		}
+		result.WriteString("\n")
+	}
+
+	// Long tasks
+	if len(longTasks) > 0 {
+		result.WriteString("### Long Tasks (> 1 hour):\n")
+		for _, task := range longTasks {
+			hours := task.TimeEstimate / 60
+			minutes := task.TimeEstimate % 60
+			result.WriteString(fmt.Sprintf("- %s (%dh %dm) [%s]\n",
+				task.Description, hours, minutes, task.Priority.String()))
+		}
+		result.WriteString("\n")
+	}
+
+	// Tasks without estimates
+	if len(noEstimateTasks) > 0 {
+		result.WriteString("### Tasks Without Time Estimates:\n")
+		for _, task := range noEstimateTasks {
+			result.WriteString(fmt.Sprintf("- %s [%s]\n", task.Description, task.Priority.String()))
+		}
+	}
+
+	return result.String(), nil
 }
