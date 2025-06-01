@@ -28,8 +28,12 @@ type OllamaModel struct {
 
 // OllamaGenerateRequest represents the request body for the Ollama generate API
 type OllamaGenerateRequest struct {
-	Model  string `json:"model"`
-	Prompt string `json:"prompt"`
+	Model       string   `json:"model"`
+	Prompt      string   `json:"prompt"`
+	Stream      bool     `json:"stream"`
+	Temperature float64  `json:"temperature,omitempty"`
+	NumPredict  int      `json:"num_predict,omitempty"`
+	Stop        []string `json:"stop,omitempty"`
 }
 
 // OllamaGenerateResponse represents the response from the Ollama generate API
@@ -118,9 +122,16 @@ func pullModel(apiURL, modelName string) error {
 
 // Query sends a prompt to the Ollama model and returns the response
 func (m *OllamaModel) Query(ctx context.Context, prompt string) (string, error) {
+	// Get default config for task queries
+	config := DefaultLLMConfig()
+	
 	reqBody := OllamaGenerateRequest{
-		Model:  m.name,
-		Prompt: prompt,
+		Model:       m.name,
+		Prompt:      config.SystemPrompt + "\n\n" + prompt,
+		Stream:      false,
+		Temperature: config.Temperature,
+		NumPredict:  config.MaxTokens,
+		Stop:        config.StopSequences,
 	}
 
 	reqBytes, err := json.Marshal(reqBody)
@@ -192,11 +203,14 @@ func NewLMStudioModel(modelName string) (*LMStudioModel, error) {
 
 // Query sends a prompt to the LM Studio model and returns the response
 func (m *LMStudioModel) Query(ctx context.Context, prompt string) (string, error) {
+	// Get default config for task queries
+	config := DefaultLLMConfig()
+	
 	reqBody := LMStudioRequest{
 		Model:       m.name,
-		Prompt:      prompt,
-		MaxTokens:   2048,
-		Temperature: 0.7,
+		Prompt:      config.SystemPrompt + "\n\n" + prompt,
+		MaxTokens:   config.MaxTokens,
+		Temperature: config.Temperature,
 	}
 
 	reqBytes, err := json.Marshal(reqBody)

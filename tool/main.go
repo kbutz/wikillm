@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kbutz/wikillm/tool/tools"
+
 )
 
 // Config Configuration options for the application
@@ -46,11 +46,8 @@ func main() {
 		}
 	}
 
-	// Initialize the V2 to-do list tool
-	todoTool := tools.NewImprovedTodoListTool(config.TodoFilePath)
-
-	// Initialize the agent with the to-do list tool
-	agent := NewAgent(model, []Tool{todoTool})
+	// Initialize the improved agent with direct TODO service access
+	agent := NewImprovedAgent(model, config.TodoFilePath)
 
 	// Start HTTP server if port is specified
 	if config.Port > 0 {
@@ -79,7 +76,7 @@ func parseFlags() Config {
 }
 
 // Start an interactive session with the user
-func startInteractiveSession(agent *Agent) {
+func startInteractiveSession(agent *ImprovedAgent) {
 	scanner := bufio.NewScanner(os.Stdin)
 
 	fmt.Println("LLM Agent To-Do List")
@@ -114,7 +111,7 @@ func startInteractiveSession(agent *Agent) {
 }
 
 // Start HTTP server
-func startHTTPServer(port int, agent *Agent) {
+func startHTTPServer(port int, agent *ImprovedAgent) {
 	http.HandleFunc("/query", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)

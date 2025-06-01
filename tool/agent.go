@@ -3,7 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
-	"github.com/kbutz/wikillm/tool/tools"
+	toolsdir "github.com/kbutz/wikillm/tool/tools"
 	"strings"
 )
 
@@ -23,20 +23,28 @@ type Tool interface {
 
 // Agent represents an LLM agent with access to tools
 type Agent struct {
-	model LLMModel
-	tools []Tool
+	model          LLMModel
+	tools          []Tool
+	queryAnalyzer  *toolsdir.QueryAnalyzer
+	responseFilter *ResponseFilter
 }
 
 // NewAgent creates a new Agent with the given model and tools
 func NewAgent(model LLMModel, tools []Tool) *Agent {
 	return &Agent{
-		model: model,
-		tools: tools,
+		model:          model,
+		tools:          tools,
+		queryAnalyzer:  toolsdir.NewQueryAnalyzer(),
+		responseFilter: NewResponseFilter(),
 	}
 }
 
 // ProcessQuery processes a user query and returns a response
 func (a *Agent) ProcessQuery(ctx context.Context, query string) (string, error) {
+	// First, check if this is a direct query about tasks that we can handle more efficiently
+	if a.isTaskQuery(query) {
+		return a.handleTaskQuery(ctx, query)
+	}
 	// Create a prompt for the LLM that includes information about available tools
 	var promptBuilder strings.Builder
 
@@ -64,7 +72,7 @@ func (a *Agent) ProcessQuery(ctx context.Context, query string) (string, error) 
 	promptBuilder.WriteString("Your response:")
 
 	// Add examples for complex queries
-	if strings.Contains(strings.ToLower(query), "todo") || strings.Contains(strings.ToLower(query), "task") || 
+	if strings.Contains(strings.ToLower(query), "todo") || strings.Contains(strings.ToLower(query), "task") ||
 		strings.Contains(strings.ToLower(query), "summarize") || strings.Contains(strings.ToLower(query), "summary") {
 		promptBuilder.WriteString("\n\n(Hint: For summaries use 'analyze summary', for priorities use 'analyze priority')")
 	}
@@ -76,7 +84,7 @@ func (a *Agent) ProcessQuery(ctx context.Context, query string) (string, error) 
 	}
 
 	// Check if the response contains a tool call
-	toolCall, found := tools.ExtractToolCall(response)
+	toolCall, found := toolsdir.ExtractToolCall(response)
 	if !found {
 		return response, nil
 	}
@@ -115,7 +123,7 @@ func (a *Agent) ProcessQuery(ctx context.Context, query string) (string, error) 
 				return toolResult, nil
 			}
 			// List commands that are informational - return immediately
-			if command == "list" && (len(commandParts) == 1 || 
+			if command == "list" && (len(commandParts) == 1 ||
 				(len(commandParts) > 1 && (commandParts[1] == "all" || commandParts[1] == "priority"))) {
 				return toolResult, nil
 			}
@@ -147,77 +155,109 @@ func (a *Agent) ProcessQuery(ctx context.Context, query string) (string, error) 
 	}
 
 	// Clean up the response - remove any duplicate content or thinking process
-	finalResponse = cleanupResponse(finalResponse)
+	finalResponse = a.responseFilter.FilterResponse(finalResponse)
 
 	return finalResponse, nil
 }
 
-// cleanupResponse removes duplicate content and thinking process from LLM responses
-func cleanupResponse(response string) string {
-	// First, check if the response contains code blocks and extract content after them
-	if strings.Contains(response, "```") {
-		// Find the last occurrence of closing code block
-		parts := strings.Split(response, "```")
-		if len(parts) >= 3 {
-			// Take the content after the last code block
-			response = parts[len(parts)-1]
+// isTaskQuery checks if the query is about tasks/todos
+func (a *Agent) isTaskQuery(query string) bool {
+	lowerQuery := strings.ToLower(query)
+	return strings.Contains(lowerQuery, "task") ||
+		strings.Contains(lowerQuery, "todo") ||
+		strings.Contains(lowerQuery, "important") ||
+		strings.Contains(lowerQuery, "priority") ||
+		strings.Contains(lowerQuery, "easiest") ||
+		strings.Contains(lowerQuery, "difficult")
+}
+
+// handleTaskQuery handles task queries more efficiently
+func (a *Agent) handleTaskQuery(ctx context.Context, query string) (string, error) {
+	// Analyze the query type
+	queryType := a.queryAnalyzer.AnalyzeQuery(query)
+
+	// Get the appropriate tool command
+	toolCommand := a.queryAnalyzer.GetToolCommand(queryType)
+
+	// Find the todo tool
+	var todoTool Tool
+	for _, tool := range a.tools {
+		if tool.Name() == "todo_list" {
+			todoTool = tool
+			break
 		}
 	}
-	
-	// Remove common patterns of thinking or duplicate responses
-	lines := strings.Split(response, "\n")
-	var cleanedLines []string
-	seenContent := make(map[string]bool)
-	var foundMainContent bool
-	
-	for _, line := range lines {
-		trimmedLine := strings.TrimSpace(line)
-		
-		// Skip empty lines before main content
-		if trimmedLine == "" && !foundMainContent {
-			continue
-		}
-		
-		// Skip lines that look like thinking process
-		lowerLine := strings.ToLower(trimmedLine)
-		if strings.Contains(lowerLine, "i should") ||
-			strings.Contains(lowerLine, "i need to") ||
-			strings.Contains(lowerLine, "let me") ||
-			strings.Contains(lowerLine, "i think") ||
-			strings.Contains(lowerLine, "now that i've used") ||
-			strings.Contains(lowerLine, "based on the information") ||
-			strings.Contains(lowerLine, "that's all i have to say") ||
-			strings.Contains(lowerLine, "i've analyzed") ||
-			strings.Contains(lowerLine, "based on the analysis") {
-			continue
-		}
-		
-		// Mark that we've found actual content
-		if trimmedLine != "" {
-			foundMainContent = true
-		}
-		
-		// Skip duplicate content (but keep the first occurrence)
-		// Create a normalized version for comparison
-		normalizedLine := strings.ToLower(strings.ReplaceAll(trimmedLine, " ", ""))
-		if !seenContent[normalizedLine] || trimmedLine == "" {
-			if trimmedLine != "" {
-				seenContent[normalizedLine] = true
-			}
-			cleanedLines = append(cleanedLines, line)
+
+	if todoTool == nil {
+		return "I don't have access to a todo list tool.", nil
+	}
+
+	// Execute the tool directly
+	toolResult, err := todoTool.Execute(ctx, toolCommand)
+	if err != nil {
+		return "", fmt.Errorf("error executing todo tool: %w", err)
+	}
+
+	// For direct queries that need formatting, format the response
+	if queryType == toolsdir.QueryTypeMostImportant || queryType == toolsdir.QueryTypeDifficulty {
+		// Load the task list for special formatting
+		if _, ok := todoTool.(*toolsdir.ImprovedTodoListTool); ok {
+			// This is a bit of a hack, but we need access to the task list
+			// In a real implementation, we'd refactor to expose this properly
+			return a.formatDirectResponse(ctx, queryType, toolResult, query)
 		}
 	}
-	
-	// Join the cleaned lines
-	cleanedResponse := strings.Join(cleanedLines, "\n")
-	
-	// Trim any trailing whitespace
-	cleanedResponse = strings.TrimSpace(cleanedResponse)
-	
-	// If the response became empty after cleaning, return a default message
-	if cleanedResponse == "" {
-		return "I've completed the analysis of your tasks."
+
+	// For analytical queries, let the LLM process the result
+	if strings.Contains(toolCommand, "analyze") || strings.Contains(toolCommand, "export") {
+		return a.processAnalyticalResult(ctx, query, toolResult)
 	}
 	
-	return cleanedResponse
+	// For direct commands, return the result as-is
+	return toolResult, nil
+}
+
+// formatDirectResponse formats direct query responses
+func (a *Agent) formatDirectResponse(ctx context.Context, queryType toolsdir.QueryType, toolResult, originalQuery string) (string, error) {
+	// For now, use the LLM to format the response concisely
+	prompt := fmt.Sprintf(
+		"Based on this task data, answer the user's question directly and concisely.\n\n"+
+			"User's question: %s\n\n"+
+			"Task data:\n%s\n\n"+
+			"Instructions:\n"+
+			"- Give ONLY the direct answer\n"+
+			"- Do NOT include any reasoning or explanation\n"+
+			"- Be specific and helpful\n"+
+			"- Start immediately with the answer\n\n"+
+			"Your response:",
+		originalQuery, toolResult)
+
+	response, err := a.model.Query(ctx, prompt)
+	if err != nil {
+		return "", err
+	}
+
+	return a.responseFilter.FilterResponse(response), nil
+}
+
+// processAnalyticalResult processes analytical command results
+func (a *Agent) processAnalyticalResult(ctx context.Context, query, toolResult string) (string, error) {
+	prompt := fmt.Sprintf(
+		"Based on this analysis, provide a clear and direct response to the user's query.\n\n"+
+			"User's query: %s\n\n"+
+			"Analysis result:\n%s\n\n"+
+			"Instructions:\n"+
+			"- Provide ONLY the answer\n"+
+			"- Do NOT include meta-commentary\n"+
+			"- Be direct and helpful\n"+
+			"- Format nicely if appropriate\n\n"+
+			"Your response:",
+		query, toolResult)
+
+	response, err := a.model.Query(ctx, prompt)
+	if err != nil {
+		return "", err
+	}
+
+	return a.responseFilter.FilterResponse(response), nil
 }
