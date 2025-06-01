@@ -20,6 +20,32 @@ type LLMModel interface {
 	Name() string
 }
 
+// LLMConfig provides configuration for LLM behavior
+type LLMConfig struct {
+	MaxTokens     int
+	Temperature   float64
+	StopSequences []string
+	SystemPrompt  string
+}
+
+// DefaultLLMConfig returns default configuration for task queries
+func DefaultLLMConfig() LLMConfig {
+	return LLMConfig{
+		MaxTokens:   300,
+		Temperature: 0.3,
+		StopSequences: []string{
+			"**Answer:**",
+			"Wait,",
+			"I should",
+			"Let me",
+			"\n\n\n",
+		},
+		SystemPrompt: "You are a helpful task management assistant. " +
+			"Provide direct, concise answers without explaining your reasoning process. " +
+			"Start immediately with the answer to the user's question.",
+	}
+}
+
 // OllamaModel implements the LLMModel interface using Ollama
 type OllamaModel struct {
 	apiURL string
@@ -124,7 +150,7 @@ func pullModel(apiURL, modelName string) error {
 func (m *OllamaModel) Query(ctx context.Context, prompt string) (string, error) {
 	// Get default config for task queries
 	config := DefaultLLMConfig()
-	
+
 	reqBody := OllamaGenerateRequest{
 		Model:       m.name,
 		Prompt:      config.SystemPrompt + "\n\n" + prompt,
@@ -205,7 +231,7 @@ func NewLMStudioModel(modelName string) (*LMStudioModel, error) {
 func (m *LMStudioModel) Query(ctx context.Context, prompt string) (string, error) {
 	// Get default config for task queries
 	config := DefaultLLMConfig()
-	
+
 	reqBody := LMStudioRequest{
 		Model:       m.name,
 		Prompt:      config.SystemPrompt + "\n\n" + prompt,

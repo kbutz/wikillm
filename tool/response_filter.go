@@ -158,29 +158,3 @@ func (rf *ResponseFilter) extractBestResponse(text string) string {
 
 	return text
 }
-
-// LLMConfig provides configuration for LLM behavior
-type LLMConfig struct {
-	MaxTokens     int
-	Temperature   float64
-	StopSequences []string
-	SystemPrompt  string
-}
-
-// DefaultLLMConfig returns default configuration for task queries
-func DefaultLLMConfig() LLMConfig {
-	return LLMConfig{
-		MaxTokens:   300,
-		Temperature: 0.3,
-		StopSequences: []string{
-			"**Answer:**",
-			"Wait,",
-			"I should",
-			"Let me",
-			"\n\n\n",
-		},
-		SystemPrompt: "You are a helpful task management assistant. " +
-			"Provide direct, concise answers without explaining your reasoning process. " +
-			"Start immediately with the answer to the user's question.",
-	}
-}
