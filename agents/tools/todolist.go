@@ -53,9 +53,184 @@ Examples:
 - export`
 }
 
+// Parameters returns the parameter schema for the tool
+func (t *TodoListTool) Parameters() map[string]interface{} {
+	return map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"command": map[string]interface{}{
+				"type":        "string",
+				"description": "The command to execute (add, list, complete, remove, clear, export, analyze)",
+				"enum":        []string{"add", "list", "complete", "remove", "clear", "export", "analyze"},
+			},
+			"task": map[string]interface{}{
+				"type":        "string",
+				"description": "The task description for add command",
+			},
+			"priority": map[string]interface{}{
+				"type":        "string",
+				"description": "The priority level for add command (low, medium, high, critical)",
+				"enum":        []string{"low", "medium", "high", "critical"},
+			},
+			"time": map[string]interface{}{
+				"type":        "string",
+				"description": "The time estimate for add command (e.g., 30m, 2h)",
+				"pattern":     "^\\d+[mh]$",
+			},
+			"number": map[string]interface{}{
+				"type":        "integer",
+				"description": "The task number for complete or remove commands",
+			},
+			"type": map[string]interface{}{
+				"type":        "string",
+				"description": "The type for list, clear, or analyze commands (all, priority, completed, summary, time)",
+				"enum":        []string{"all", "priority", "completed", "summary", "time"},
+			},
+		},
+		"required":             []string{"command"},
+		"additionalProperties": false,
+	}
+}
+
 // Execute runs the tool with the given arguments and returns the result
 func (t *TodoListTool) Execute(ctx context.Context, args string) (string, error) {
-	// Parse the command
+	// Check if args is a JSON string
+	var params map[string]interface{}
+	if strings.HasPrefix(strings.TrimSpace(args), "{") {
+		if err := json.Unmarshal([]byte(args), &params); err == nil {
+			// Successfully parsed JSON, extract command and arguments
+			cmdInterface, ok := params["command"]
+			if !ok {
+				return "", fmt.Errorf("command parameter is required")
+			}
+
+			command, ok := cmdInterface.(string)
+			if !ok {
+				return "", fmt.Errorf("command must be a string")
+			}
+
+			command = strings.ToLower(command)
+
+			switch command {
+			case "add":
+				// Extract task, priority, and time
+				taskInterface, hasTask := params["task"]
+				if !hasTask {
+					return "", fmt.Errorf("task parameter is required for add command")
+				}
+
+				task, ok := taskInterface.(string)
+				if !ok {
+					return "", fmt.Errorf("task must be a string")
+				}
+
+				// Build add command
+				addCmd := "add " + task
+
+				// Add priority if present
+				if priorityInterface, hasProperty := params["priority"]; hasProperty {
+					if priority, ok := priorityInterface.(string); ok {
+						addCmd += " priority:" + priority
+					}
+				}
+
+				// Add time if present
+				if timeInterface, hasProperty := params["time"]; hasProperty {
+					if timeStr, ok := timeInterface.(string); ok {
+						addCmd += " time:" + timeStr
+					}
+				}
+
+				return t.addTask(addCmd)
+
+			case "list":
+				// Extract list type
+				listType := "active"
+				if typeInterface, hasProperty := params["type"]; hasProperty {
+					if typeStr, ok := typeInterface.(string); ok {
+						listType = typeStr
+					}
+				}
+
+				return t.listTasks(listType)
+
+			case "complete":
+				// Extract task number
+				numberInterface, hasNumber := params["number"]
+				if !hasNumber {
+					return "", fmt.Errorf("number parameter is required for complete command")
+				}
+
+				var numberStr string
+				switch num := numberInterface.(type) {
+				case float64:
+					numberStr = fmt.Sprintf("%d", int(num))
+				case int:
+					numberStr = fmt.Sprintf("%d", num)
+				case string:
+					numberStr = num
+				default:
+					return "", fmt.Errorf("number must be an integer")
+				}
+
+				return t.completeTask(numberStr)
+
+			case "remove":
+				// Extract task number
+				numberInterface, hasNumber := params["number"]
+				if !hasNumber {
+					return "", fmt.Errorf("number parameter is required for remove command")
+				}
+
+				var numberStr string
+				switch num := numberInterface.(type) {
+				case float64:
+					numberStr = fmt.Sprintf("%d", int(num))
+				case int:
+					numberStr = fmt.Sprintf("%d", num)
+				case string:
+					numberStr = num
+				default:
+					return "", fmt.Errorf("number must be an integer")
+				}
+
+				return t.removeTask(numberStr)
+
+			case "clear":
+				// Extract clear type
+				clearType := "all"
+				if typeInterface, hasProperty := params["type"]; hasProperty {
+					if typeStr, ok := typeInterface.(string); ok {
+						clearType = typeStr
+					}
+				}
+
+				return t.clearTasks(clearType)
+
+			case "export":
+				return t.exportTasks()
+
+			case "analyze":
+				// Extract analyze type
+				typeInterface, hasType := params["type"]
+				if !hasType {
+					return "", fmt.Errorf("type parameter is required for analyze command")
+				}
+
+				typeStr, ok := typeInterface.(string)
+				if !ok {
+					return "", fmt.Errorf("type must be a string")
+				}
+
+				return t.analyzeTasks(typeStr)
+
+			default:
+				return "", fmt.Errorf("unknown command: %s", command)
+			}
+		}
+	}
+
+	// Fall back to parsing command from string
 	parts := strings.Fields(args)
 	if len(parts) == 0 {
 		return "", fmt.Errorf("no command provided")
