@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"github.com/kbutz/wikillm/tool/tools"
 	"log"
 	"net/http"
 	"os"
@@ -44,10 +45,11 @@ func main() {
 		}
 	}
 
-	// Initialize the to-do list tool
-	todoTool := NewTodoListTool(config.TodoFilePath)
+	// Initialize the improved agent with direct TODO service access
+	// Create the todo tool
+	todoTool := tools.NewImprovedTodoListTool(config.TodoFilePath)
 
-	// Initialize the agent with the to-do list tool
+	// Create base agent
 	agent := NewAgent(model, []Tool{todoTool})
 
 	// Start HTTP server if port is specified
@@ -55,7 +57,7 @@ func main() {
 		go startHTTPServer(config.Port, agent)
 	}
 
-	// Start interactive session
+	// Start the interactive session
 	startInteractiveSession(agent)
 }
 
@@ -106,7 +108,8 @@ func startInteractiveSession(agent *Agent) {
 		}
 
 		elapsed := time.Since(startTime)
-		fmt.Printf("\nResponse (generated in %.2f seconds):\n%s\n", elapsed.Seconds(), response)
+		fmt.Printf("\nResponse:\n%s\n", response)
+		fmt.Printf("\nResponse generated in %.2f seconds.\n", elapsed.Seconds())
 	}
 }
 

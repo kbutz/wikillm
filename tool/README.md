@@ -1,6 +1,6 @@
-# LLM Agent To-Do List
+# Enhanced LLM Agent To-Do List
 
-This is a command-line and HTTP-based to-do list application powered by an LLM Agent. The agent can interact with a text file to manage your to-do list and is designed to be extensible with additional tools in the future.
+This is a command-line and HTTP-based to-do list application powered by an LLM Agent. The agent can interact with a JSON file to manage your to-do list with advanced analytical capabilities, enabling complex queries about task priorities, time estimates, and comprehensive summaries.
 
 ## Features
 
@@ -8,6 +8,9 @@ This is a command-line and HTTP-based to-do list application powered by an LLM A
 - HTTP API for integration with other applications
 - Works offline using local LLM models (LM Studio or Ollama)
 - Extensible tool framework for adding new capabilities
+- **Advanced task analysis**: Priority analysis, time estimates, and comprehensive summaries
+- **Intelligent query processing**: Distinguishes between direct commands and analytical queries
+- **Structured data export**: JSON export for complex LLM analysis
 
 ## Prerequisites
 
@@ -62,17 +65,38 @@ curl -X POST http://localhost:8080/query \
 
 The agent understands natural language commands for managing your to-do list. Here are some examples:
 
-- "Add buy groceries to my to-do list"
+### Basic Task Management
+- "Add buy groceries to my to-do list with high priority and 30 minutes"
 - "Show me my to-do list"
-- "Remove item 3 from my to-do list"
-- "Clear my to-do list"
+- "Complete task 3"
+- "Remove item 2 from my to-do list"
+- "Clear my completed tasks"
 
-Behind the scenes, the agent uses the `todo_list` tool with the following commands:
+### Advanced Analytical Queries
+- **"What is my most important task today?"** - Uses priority analysis to identify critical tasks
+- **"Give me a summary of all my tasks"** - Provides comprehensive overview with statistics
+- **"What tasks can I complete quickly?"** - Analyzes time estimates to find quick wins
+- **"Which tasks should I prioritize?"** - Exports data for complex multi-factor analysis
 
-- `add <task>`: Adds a task to the list
-- `list`: Shows all tasks
-- `remove <number>`: Removes a task by its number
+### Behind the Scenes Commands
+
+The `todo_list` tool supports these commands:
+
+#### Task Management
+- `add <task> [priority:low/medium/high/critical] [time:XXm/XXh]`: Adds a task with optional priority and time
+- `list`: Shows all active tasks
+- `list all`: Shows all tasks including completed
+- `list priority`: Shows tasks sorted by priority
+- `complete <number>`: Marks a task as completed
+- `remove <number>`: Removes a task
 - `clear`: Removes all tasks
+- `clear completed`: Removes only completed tasks
+
+#### Analytical Commands (NEW)
+- `export`: Exports all task data as JSON for LLM analysis
+- `analyze priority`: Provides detailed priority analysis with most important tasks
+- `analyze summary`: Generates comprehensive task summary with statistics
+- `analyze time`: Analyzes tasks by time estimates to identify quick wins
 
 ## Extending with New Tools
 

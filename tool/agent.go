@@ -2,9 +2,8 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"os"
+	toolsdir "github.com/kbutz/wikillm/tool/tools"
 	"strings"
 )
 
@@ -24,34 +23,59 @@ type Tool interface {
 
 // Agent represents an LLM agent with access to tools
 type Agent struct {
-	model LLMModel
-	tools []Tool
+	model          LLMModel
+	tools          []Tool
+	queryAnalyzer  *toolsdir.QueryAnalyzer
+	responseFilter *ResponseFilter
 }
 
 // NewAgent creates a new Agent with the given model and tools
 func NewAgent(model LLMModel, tools []Tool) *Agent {
 	return &Agent{
-		model: model,
-		tools: tools,
+		model:          model,
+		tools:          tools,
+		queryAnalyzer:  toolsdir.NewQueryAnalyzer(),
+		responseFilter: NewResponseFilter(),
 	}
 }
 
 // ProcessQuery processes a user query and returns a response
 func (a *Agent) ProcessQuery(ctx context.Context, query string) (string, error) {
+	// First, check if this is a direct query about tasks that we can handle more efficiently
+	if a.isTaskQuery(query) {
+		return a.handleTaskQuery(ctx, query)
+	}
 	// Create a prompt for the LLM that includes information about available tools
 	var promptBuilder strings.Builder
 
 	promptBuilder.WriteString("You are an AI assistant with access to the following tools:\n\n")
 
 	for _, tool := range a.tools {
-		promptBuilder.WriteString(fmt.Sprintf("- %s: %s\n", tool.Name(), tool.Description()))
+		promptBuilder.WriteString(fmt.Sprintf("### Tool: %s\n%s\n\n", tool.Name(), tool.Description()))
 	}
 
-	promptBuilder.WriteString("\nTo use a tool, respond with a JSON object in the following format:\n")
-	promptBuilder.WriteString("```json\n{\"tool\": \"tool_name\", \"args\": \"tool arguments\"}\n```\n")
-	promptBuilder.WriteString("If you don't need to use a tool, just respond normally.\n\n")
+	promptBuilder.WriteString("\n## How to Use Tools\n\n")
+	promptBuilder.WriteString("To use a tool, respond with a JSON object in a code block:\n\n")
+	promptBuilder.WriteString("```json\n{\n  \"tool\": \"tool_name\",\n  \"args\": \"command and arguments\"\n}\n```\n\n")
+	promptBuilder.WriteString("### Important Notes:\n")
+	promptBuilder.WriteString("- Always use the exact tool name as shown above\n")
+	promptBuilder.WriteString("- The 'args' field should contain the complete command with all parameters\n")
+	promptBuilder.WriteString("- For the todo_list tool, include priority and time in the args string (e.g., \"add Buy milk priority:high time:30m\")\n")
+	promptBuilder.WriteString("- If you don't need to use a tool, just respond normally without JSON\n")
+	promptBuilder.WriteString("- For analytical queries about tasks (most important, summary, analysis), use 'export' or 'analyze' commands\n\n")
+	promptBuilder.WriteString("### Query Analysis Guidelines:\n")
+	promptBuilder.WriteString("- If asked about 'most important', 'highest priority', or 'urgent' tasks, use: todo_list with 'analyze priority'\n")
+	promptBuilder.WriteString("- If asked for a summary or overview of tasks, use: todo_list with 'analyze summary'\n")
+	promptBuilder.WriteString("- If asked complex questions about tasks, use: todo_list with 'export' to get full data\n\n")
 	promptBuilder.WriteString("User query: " + query + "\n\n")
+	promptBuilder.WriteString("IMPORTANT: Respond with ONLY the tool call JSON or your direct response. Do not include any thinking process or explanations.\n\n")
 	promptBuilder.WriteString("Your response:")
+
+	// Add examples for complex queries
+	if strings.Contains(strings.ToLower(query), "todo") || strings.Contains(strings.ToLower(query), "task") ||
+		strings.Contains(strings.ToLower(query), "summarize") || strings.Contains(strings.ToLower(query), "summary") {
+		promptBuilder.WriteString("\n\n(Hint: For summaries use 'analyze summary', for priorities use 'analyze priority')")
+	}
 
 	// Send the prompt to the LLM
 	response, err := a.model.Query(ctx, promptBuilder.String())
@@ -60,7 +84,7 @@ func (a *Agent) ProcessQuery(ctx context.Context, query string) (string, error) 
 	}
 
 	// Check if the response contains a tool call
-	toolCall, found := extractToolCall(response)
+	toolCall, found := toolsdir.ExtractToolCall(response)
 	if !found {
 		return response, nil
 	}
@@ -84,20 +108,45 @@ func (a *Agent) ProcessQuery(ctx context.Context, query string) (string, error) 
 	if err != nil {
 		return "", fmt.Errorf("error executing tool %s: %w", toolCall.Tool, err)
 	}
+	// fmt.Printf("Tool %s executed with args: %s\nResult: %s\n", toolCall.Tool, toolCall.Args, toolResult)
 
-	// For all todo_list tool commands, return the result directly
-	// to avoid the LLM potentially replacing actual task content with placeholders
+	// For todo_list tool commands, check if it's a direct command or analytical query
+	// Direct commands (add, complete, remove, clear) should return results directly
+	// Analytical queries (export, analyze) should be processed by the LLM
 	if strings.EqualFold(toolCall.Tool, "todo_list") {
-		return toolResult, nil
+		// Parse the command from args
+		commandParts := strings.Fields(toolCall.Args)
+		if len(commandParts) > 0 {
+			command := strings.ToLower(commandParts[0])
+			// Direct commands that modify the list - return immediately
+			if command == "add" || command == "complete" || command == "remove" || command == "clear" {
+				return toolResult, nil
+			}
+			// List commands that are informational - return immediately
+			if command == "list" && (len(commandParts) == 1 ||
+				(len(commandParts) > 1 && (commandParts[1] == "all" || commandParts[1] == "priority"))) {
+				return toolResult, nil
+			}
+		}
+		// For export/analyze commands, let the LLM process the data
 	}
 
 	// Create a follow-up prompt with the tool result
+	// For analytical commands, provide clear instructions to avoid verbose output
 	followUpPrompt := fmt.Sprintf(
-		"You previously tried to answer this query: %s\n\n"+
-			"You used the %s tool with args: %s\n\n"+
-			"The tool returned this result: %s\n\n"+
-			"Please provide your final response to the user based on this information:",
-		query, toolCall.Tool, toolCall.Args, toolResult)
+		"Based on the following task analysis data, provide a clear and concise response to the user's query.\n\n"+
+			"User's original query: %s\n\n"+
+			"Task analysis result:\n%s\n\n"+
+			"CRITICAL Instructions:\n"+
+			"- Provide ONLY the final answer to the user\n"+
+			"- Do NOT include your thought process, reasoning, or any meta-commentary\n"+
+			"- Do NOT repeat the query or explain what you did\n"+
+			"- Do NOT say things like 'Based on the analysis' or 'I've analyzed'\n"+
+			"- Format the response in a user-friendly way\n"+
+			"- Be direct and helpful\n"+
+			"- Start your response immediately with the answer\n\n"+
+			"Your response:",
+		query, toolResult)
 
 	// Send the follow-up prompt to the LLM
 	finalResponse, err := a.model.Query(ctx, followUpPrompt)
@@ -105,251 +154,110 @@ func (a *Agent) ProcessQuery(ctx context.Context, query string) (string, error) 
 		return "", fmt.Errorf("error querying LLM for final response: %w", err)
 	}
 
+	// Clean up the response - remove any duplicate content or thinking process
+	finalResponse = a.responseFilter.FilterResponse(finalResponse)
+
 	return finalResponse, nil
 }
 
-// ToolCall represents a request to use a tool
-type ToolCall struct {
-	Tool string `json:"tool"`
-	Args string `json:"args"`
+// isTaskQuery checks if the query is about tasks/todos
+func (a *Agent) isTaskQuery(query string) bool {
+	lowerQuery := strings.ToLower(query)
+	return strings.Contains(lowerQuery, "task") ||
+		strings.Contains(lowerQuery, "todo") ||
+		strings.Contains(lowerQuery, "important") ||
+		strings.Contains(lowerQuery, "priority") ||
+		strings.Contains(lowerQuery, "easiest") ||
+		strings.Contains(lowerQuery, "difficult")
 }
 
-// extractToolCall attempts to extract a tool call from the LLM response
-func extractToolCall(response string) (ToolCall, bool) {
-	// Look for JSON blocks in the response
-	jsonStart := strings.Index(response, "{")
-	jsonEnd := strings.LastIndex(response, "}")
+// handleTaskQuery handles task queries more efficiently
+func (a *Agent) handleTaskQuery(ctx context.Context, query string) (string, error) {
+	// Analyze the query type
+	queryType := a.queryAnalyzer.AnalyzeQuery(query)
 
-	if jsonStart == -1 || jsonEnd == -1 || jsonEnd < jsonStart {
-		return ToolCall{}, false
-	}
+	// Get the appropriate tool command
+	toolCommand := a.queryAnalyzer.GetToolCommand(queryType)
 
-	jsonStr := response[jsonStart : jsonEnd+1]
-
-	// First try to unmarshal into a map to handle different args formats
-	var rawMap map[string]interface{}
-	err := json.Unmarshal([]byte(jsonStr), &rawMap)
-	if err != nil || rawMap["tool"] == "" {
-		return ToolCall{}, false
-	}
-
-	// Extract the tool name
-	toolName, _ := rawMap["tool"].(string)
-	if toolName == "" {
-		return ToolCall{}, false
-	}
-
-	// Handle different formats of args
-	var argsStr string
-	switch args := rawMap["args"].(type) {
-	case string:
-		// If args is already a string, use it directly
-		argsStr = args
-	case []interface{}:
-		// If args is an array, join the elements
-		if len(args) > 0 {
-			// First element is usually the command
-			command, _ := args[0].(string)
-			argsStr = command
-
-			// If there are more elements, they are the arguments
-			if len(args) > 1 {
-				// Join the rest of the arguments
-				for i := 1; i < len(args); i++ {
-					if arg, ok := args[i].(string); ok {
-						argsStr += " " + arg
-					}
-				}
-			}
+	// Find the todo tool
+	var todoTool Tool
+	for _, tool := range a.tools {
+		if tool.Name() == "todo_list" {
+			todoTool = tool
+			break
 		}
-	case map[string]interface{}:
-		// If args is an object, extract the task
-		if task, ok := args["task"].(string); ok && task != "" {
-			argsStr = "add " + task
-		} else {
-			// If there's no task field or it's empty, try to construct from other fields
-			var parts []string
-			for _, v := range args {
-				if str, ok := v.(string); ok {
-					parts = append(parts, str)
-				} else if str, ok := v.(float64); ok {
-					parts = append(parts, fmt.Sprintf("%v", str))
-				}
-			}
-			argsStr = strings.Join(parts, " ")
-		}
-	default:
-		// For any other type, convert to string
-		argsStr = fmt.Sprintf("%v", args)
 	}
 
-	return ToolCall{
-		Tool: toolName,
-		Args: argsStr,
-	}, true
-}
-
-// TodoListTool implements the Tool interface for managing a to-do list
-type TodoListTool struct {
-	filePath string
-}
-
-// NewTodoListTool creates a new TodoListTool
-func NewTodoListTool(filePath string) *TodoListTool {
-	return &TodoListTool{
-		filePath: filePath,
+	if todoTool == nil {
+		return "I don't have access to a todo list tool.", nil
 	}
-}
 
-// Name returns the name of the tool
-func (t *TodoListTool) Name() string {
-	return "todo_list"
-}
-
-// Description returns a description of what the tool does
-func (t *TodoListTool) Description() string {
-	return "Manages a to-do list. Commands: add <task>, list, remove <number>, clear"
-}
-
-// Execute runs the tool with the given arguments and returns the result
-func (t *TodoListTool) Execute(ctx context.Context, args string) (string, error) {
-	parts := strings.SplitN(args, " ", 2)
-	command := strings.ToLower(parts[0])
-
-	switch command {
-	case "add":
-		if len(parts) < 2 || strings.TrimSpace(parts[1]) == "" {
-			return "", fmt.Errorf("add command requires a task")
-		}
-		return t.addTask(parts[1])
-
-	case "list":
-		return t.listTasks()
-
-	case "remove":
-		if len(parts) < 2 || strings.TrimSpace(parts[1]) == "" {
-			return "", fmt.Errorf("remove command requires a task number")
-		}
-		return t.removeTask(parts[1])
-
-	case "clear":
-		return t.clearTasks()
-
-	default:
-		return "", fmt.Errorf("unknown command: %s", command)
+	// Execute the tool directly
+	toolResult, err := todoTool.Execute(ctx, toolCommand)
+	if err != nil {
+		return "", fmt.Errorf("error executing todo tool: %w", err)
 	}
+
+	// For direct queries that need formatting, format the response
+	if queryType == toolsdir.QueryTypeMostImportant || queryType == toolsdir.QueryTypeDifficulty {
+		// Load the task list for special formatting
+		if _, ok := todoTool.(*toolsdir.ImprovedTodoListTool); ok {
+			// This is a bit of a hack, but we need access to the task list
+			// In a real implementation, we'd refactor to expose this properly
+			return a.formatDirectResponse(ctx, queryType, toolResult, query)
+		}
+	}
+
+	// For analytical queries, let the LLM process the result
+	if strings.Contains(toolCommand, "analyze") || strings.Contains(toolCommand, "export") {
+		return a.processAnalyticalResult(ctx, query, toolResult)
+	}
+	
+	// For direct commands, return the result as-is
+	return toolResult, nil
 }
 
-// addTask adds a task to the to-do list
-func (t *TodoListTool) addTask(task string) (string, error) {
-	tasks, err := t.readTasks()
+// formatDirectResponse formats direct query responses
+func (a *Agent) formatDirectResponse(ctx context.Context, queryType toolsdir.QueryType, toolResult, originalQuery string) (string, error) {
+	// For now, use the LLM to format the response concisely
+	prompt := fmt.Sprintf(
+		"Based on this task data, answer the user's question directly and concisely.\n\n"+
+			"User's question: %s\n\n"+
+			"Task data:\n%s\n\n"+
+			"Instructions:\n"+
+			"- Give ONLY the direct answer\n"+
+			"- Do NOT include any reasoning or explanation\n"+
+			"- Be specific and helpful\n"+
+			"- Start immediately with the answer\n\n"+
+			"Your response:",
+		originalQuery, toolResult)
+
+	response, err := a.model.Query(ctx, prompt)
 	if err != nil {
 		return "", err
 	}
 
-	tasks = append(tasks, strings.TrimSpace(task))
-
-	if err := t.writeTasks(tasks); err != nil {
-		return "", err
-	}
-
-	return fmt.Sprintf("Added task: %s", task), nil
+	return a.responseFilter.FilterResponse(response), nil
 }
 
-// listTasks returns a list of all tasks
-func (t *TodoListTool) listTasks() (string, error) {
-	tasks, err := t.readTasks()
+// processAnalyticalResult processes analytical command results
+func (a *Agent) processAnalyticalResult(ctx context.Context, query, toolResult string) (string, error) {
+	prompt := fmt.Sprintf(
+		"Based on this analysis, provide a clear and direct response to the user's query.\n\n"+
+			"User's query: %s\n\n"+
+			"Analysis result:\n%s\n\n"+
+			"Instructions:\n"+
+			"- Provide ONLY the answer\n"+
+			"- Do NOT include meta-commentary\n"+
+			"- Be direct and helpful\n"+
+			"- Format nicely if appropriate\n\n"+
+			"Your response:",
+		query, toolResult)
+
+	response, err := a.model.Query(ctx, prompt)
 	if err != nil {
 		return "", err
 	}
 
-	if len(tasks) == 0 {
-		return "No tasks in the to-do list.", nil
-	}
-
-	var result strings.Builder
-	result.WriteString("To-Do List:\n")
-
-	for i, task := range tasks {
-		result.WriteString(fmt.Sprintf("%d. %s\n", i+1, task))
-	}
-
-	return result.String(), nil
-}
-
-// removeTask removes a task from the to-do list
-func (t *TodoListTool) removeTask(indexStr string) (string, error) {
-	var index int
-	if _, err := fmt.Sscanf(indexStr, "%d", &index); err != nil {
-		return "", fmt.Errorf("invalid task number: %s", indexStr)
-	}
-
-	tasks, err := t.readTasks()
-	if err != nil {
-		return "", err
-	}
-
-	if index < 1 || index > len(tasks) {
-		return "", fmt.Errorf("task number out of range: %d", index)
-	}
-
-	removedTask := tasks[index-1]
-	tasks = append(tasks[:index-1], tasks[index:]...)
-
-	if err := t.writeTasks(tasks); err != nil {
-		return "", err
-	}
-
-	return fmt.Sprintf("Removed task: %s", removedTask), nil
-}
-
-// clearTasks removes all tasks from the to-do list
-func (t *TodoListTool) clearTasks() (string, error) {
-	if err := t.writeTasks([]string{}); err != nil {
-		return "", err
-	}
-
-	return "Cleared all tasks from the to-do list.", nil
-}
-
-// readTasks reads the tasks from the file
-func (t *TodoListTool) readTasks() ([]string, error) {
-	// Check if file exists
-	if _, err := os.Stat(t.filePath); os.IsNotExist(err) {
-		// Create empty file
-		return []string{}, nil
-	}
-
-	data, err := os.ReadFile(t.filePath)
-	if err != nil {
-		return nil, fmt.Errorf("error reading to-do list file: %w", err)
-	}
-
-	if len(data) == 0 {
-		return []string{}, nil
-	}
-
-	tasks := strings.Split(string(data), "\n")
-
-	// Filter out empty lines
-	var filteredTasks []string
-	for _, task := range tasks {
-		if strings.TrimSpace(task) != "" {
-			filteredTasks = append(filteredTasks, task)
-		}
-	}
-
-	return filteredTasks, nil
-}
-
-// writeTasks writes the tasks to the file
-func (t *TodoListTool) writeTasks(tasks []string) error {
-	data := strings.Join(tasks, "\n")
-
-	err := os.WriteFile(t.filePath, []byte(data), 0644)
-	if err != nil {
-		return fmt.Errorf("error writing to-do list file: %w", err)
-	}
-
-	return nil
+	return a.responseFilter.FilterResponse(response), nil
 }
