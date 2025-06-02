@@ -54,8 +54,7 @@ func defaultLLMConfig() LLMConfig {
 	return LLMConfig{
 		//MaxTokens:   1000,
 		Temperature: 0.3,
-		SystemPrompt: "You are a helpful task management assistant. " +
-			"Provide direct, concise answers without explaining your reasoning process. " +
-			"Start immediately with the answer to the user's question. no think",
+		SystemPrompt: "You an expert Project Manager with expertise in breaking down and prioritizing tasks. " +
+			"Please, provide assistance with task management, project planning, and software development processes.",
 	}
 }
