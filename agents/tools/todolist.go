@@ -77,8 +77,8 @@ func (t *TodoListTool) Parameters() map[string]interface{} {
 			},
 			"type": map[string]interface{}{
 				"type":        "string",
-				"description": "The type for list, clear, or analyze commands (all, priority, completed, summary, time)",
-				"enum":        []string{"all", "priority", "completed", "summary", "time"},
+				"description": "The type for list or clear commands (all, priority, completed)",
+				"enum":        []string{"all", "priority", "completed"},
 			},
 		},
 		"required":             []string{"command"},
