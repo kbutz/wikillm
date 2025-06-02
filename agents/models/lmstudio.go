@@ -8,7 +8,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httputil"
-	"strings"
 )
 
 // LMStudioModel implements the LLMModel interface using LM Studio
@@ -110,17 +109,32 @@ func (m *LMStudioModel) Query(ctx context.Context, prompt string) (string, error
 func (m *LMStudioModel) QueryWithTools(ctx context.Context, prompt string, tools []Tool) (string, error) {
 	// Formats the request for LM Studio with tools, config defaults and system prompt
 	request := m.getRequest(prompt, tools)
-	// Posts the request to the LM Studio API
-	response, err := m.sendRequest(ctx, request)
-	if err != nil {
-		return "", fmt.Errorf("error sending request: %w", err)
-	}
 
-	// Check if the response contains tool calls
-	if len(response.Choices[0].Message.ToolCalls) > 0 {
-		// Process tool calls
-		var result strings.Builder
+	// Posts the request to the LM Studio API until there are no tool calls or a maximum number of attempts is reached
+	// TODO: The max of 10 is just a placeholder to avoid an infinite loop, but we should implement a better way to handle this
+	for i := range 10 {
+		if m.debug {
+			fmt.Printf("DEBUG: LMStudio sending request, iteration #: %v\n", i)
+		}
+
+		response, err := m.sendRequest(ctx, request)
+		if err != nil {
+			return "", fmt.Errorf("error sending request: %w", err)
+		}
+
+		if len(response.Choices[0].Message.ToolCalls) == 0 {
+			// No tool calls, return the content directly
+			if m.debug {
+				fmt.Printf("DEBUG: No tool calls found in response, returning content now: %s\n", response.Choices[0].Message.Content)
+			}
+			return response.Choices[0].Message.Content, nil
+		}
+
+		// Process tool calls and add them to the conversation in the messages slice
 		for _, toolCall := range response.Choices[0].Message.ToolCalls {
+			if m.debug {
+				fmt.Printf("DEBUG: Processing tool call: %s with arguments: %s\n", toolCall.Function.Name, toolCall.Function.Arguments)
+			}
 			// Find the tool
 			var selectedTool Tool
 			for _, tool := range tools {
@@ -131,14 +145,16 @@ func (m *LMStudioModel) QueryWithTools(ctx context.Context, prompt string, tools
 			}
 
 			if selectedTool == nil {
-				result.WriteString(fmt.Sprintf("Tool '%s' not found.\n", toolCall.Function.Name))
+				// TODO: Need to tell the conversation that this tool is not available so it doesn't try again
+				fmt.Printf("Tool '%s' not found.\n", toolCall.Function.Name)
 				continue
 			}
 
 			// Execute the tool
 			toolResult, err := selectedTool.Execute(ctx, toolCall.Function.Arguments)
 			if err != nil {
-				result.WriteString(fmt.Sprintf("Error executing tool '%s': %v\n", toolCall.Function.Name, err))
+				// TODO: Need to tell the conversation that this tool failed so we don't try again
+				fmt.Printf("Error executing tool '%s': %v\n", toolCall.Function.Name, err)
 				continue
 			}
 
@@ -162,27 +178,14 @@ func (m *LMStudioModel) QueryWithTools(ctx context.Context, prompt string, tools
 				ToolCallID: toolCall.ID,
 			})
 
-			result.WriteString(fmt.Sprintf("Tool '%s' executed with result: %s\n", toolCall.Function.Name, toolResult))
+			if m.debug {
+				fmt.Printf("Tool '%s' executed with result: %s\n", toolCall.Function.Name, toolResult)
+			}
 		}
 
-		// Send a follow-up request with the tool results
-		//request.Messages = messages
-		//reqBody.Tools = []LMStudioTool{} // Empty array instead of nil
-		//reqBody.ToolChoice = ""          // Empty string instead of nil
-
-		// Current implementation hard codes sending the request again if there were tool calls
-		response, err = m.sendRequest(ctx, request)
-		if err != nil {
-			return "", fmt.Errorf("error sending follow-up request: %w", err)
-		}
 	}
 
-	if m.debug {
-		fmt.Printf("DEBUG: LMStudio decoded choices: %v\n", response)
-	}
-
-	// Return only the content of the first choice
-	return strings.TrimSpace(response.Choices[0].Message.Content), nil
+	return "", fmt.Errorf("no valid response after multiple attempts")
 }
 
 func (m *LMStudioModel) getRequest(prompt string, tools []Tool) LMStudioChatRequest {
