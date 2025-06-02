@@ -103,158 +103,24 @@ func (m *LMStudioModel) Name() string {
 
 // Query sends a prompt to the LM Studio model and returns the response
 func (m *LMStudioModel) Query(ctx context.Context, prompt string) (string, error) {
-	// Get default config for task queries
-	config := defaultLLMConfig()
-
-	// Build messages array with proper role structure
-	messages := []LMStudioMessage{
-		{
-			Role:    "system",
-			Content: config.SystemPrompt,
-		},
-		{
-			Role:    "user",
-			Content: prompt,
-		},
-	}
-
-	reqBody := LMStudioChatRequest{
-		Model:       m.name,
-		Messages:    messages,
-		MaxTokens:   config.MaxTokens,
-		Temperature: config.Temperature,
-		Stop:        config.StopSequences,
-	}
-
-	reqBytes, err := json.Marshal(reqBody)
-	if err != nil {
-		return "", err
-	}
-
-	req, err := http.NewRequestWithContext(ctx, "POST", m.apiURL, bytes.NewBuffer(reqBytes))
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	client := &http.Client{}
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		bodyBytes, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("failed to generate response: status code %d, response: %s", resp.StatusCode, string(bodyBytes))
-	}
-
-	if m.debug {
-		body, _ := httputil.DumpResponse(resp, true)
-		fmt.Printf("DEBUG: LMStudio HTTP Response: %s\n", string(body))
-	}
-
-	var chatResp LMStudioChatResponse
-	if err := json.NewDecoder(resp.Body).Decode(&chatResp); err != nil {
-		return "", err
-	}
-
-	if len(chatResp.Choices) == 0 {
-		return "", fmt.Errorf("no response generated")
-	}
-
-	if m.debug {
-		fmt.Printf("DEBUG: LMStudio decoded choices: %v\n", chatResp)
-	}
-	// Trim any leading/trailing whitespace
-	return strings.TrimSpace(chatResp.Choices[0].Message.Content), nil
+	return m.QueryWithTools(ctx, prompt, nil)
 }
 
 // QueryWithTools sends a prompt to the LM Studio model with available tools and returns the response
 func (m *LMStudioModel) QueryWithTools(ctx context.Context, prompt string, tools []Tool) (string, error) {
-	// Get default config for task queries
-	config := defaultLLMConfig()
-
-	// Build messages array with the proper role structure
-	messages := []LMStudioMessage{
-		{
-			Role:    "system",
-			Content: config.SystemPrompt,
-		},
-		{
-			Role:    "user",
-			Content: prompt,
-		},
-	}
-
-	// Convert tools to LMStudioTool format
-	lmStudioTools := make([]LMStudioTool, len(tools))
-	for i, tool := range tools {
-		lmStudioTools[i] = LMStudioTool{
-			Type: "function",
-			Function: LMStudioToolFunction{
-				Name:        tool.Name(),
-				Description: tool.Description(),
-				Parameters:  tool.Parameters(),
-				Strict:      true,
-			},
-		}
-	}
-
-	reqBody := LMStudioChatRequest{
-		Model:       m.name,
-		Messages:    messages,
-		MaxTokens:   config.MaxTokens,
-		Temperature: config.Temperature,
-		Stop:        config.StopSequences,
-		Tools:       lmStudioTools,
-		ToolChoice:  "auto", // Let the model decide whether to use tools
-	}
-
-	reqBytes, err := json.Marshal(reqBody)
+	// Formats the request for LM Studio with tools, config defaults and system prompt
+	request := m.getRequest(prompt, tools)
+	// Posts the request to the LM Studio API
+	response, err := m.sendRequest(ctx, request)
 	if err != nil {
-		return "", err
-	}
-	if m.debug {
-		fmt.Printf("DEBUG: LMStudio HTTP Request: %s\n", string(reqBytes))
-	}
-
-	req, err := http.NewRequestWithContext(ctx, "POST", m.apiURL, bytes.NewBuffer(reqBytes))
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		bodyBytes, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("failed to generate response: status code %d, response: %s", resp.StatusCode, string(bodyBytes))
-	}
-
-	if m.debug {
-		body, _ := httputil.DumpResponse(resp, true)
-		fmt.Printf("DEBUG: LMStudio HTTP Response: %s\n", string(body))
-	}
-
-	var chatResp LMStudioChatResponse
-	if err := json.NewDecoder(resp.Body).Decode(&chatResp); err != nil {
-		return "", err
-	}
-
-	if len(chatResp.Choices) == 0 {
-		return "", fmt.Errorf("no response generated")
+		return "", fmt.Errorf("error sending request: %w", err)
 	}
 
 	// Check if the response contains tool calls
-	if len(chatResp.Choices[0].Message.ToolCalls) > 0 {
+	if len(response.Choices[0].Message.ToolCalls) > 0 {
 		// Process tool calls
 		var result strings.Builder
-		for _, toolCall := range chatResp.Choices[0].Message.ToolCalls {
+		for _, toolCall := range response.Choices[0].Message.ToolCalls {
 			// Find the tool
 			var selectedTool Tool
 			for _, tool := range tools {
@@ -284,13 +150,13 @@ func (m *LMStudioModel) QueryWithTools(ctx context.Context, prompt string, tools
 			toolCallObj.Function.Name = toolCall.Function.Name
 			toolCallObj.Function.Arguments = toolCall.Function.Arguments
 
-			messages = append(messages, LMStudioMessage{
+			request.Messages = append(request.Messages, LMStudioMessage{
 				Role:      "assistant",
 				Content:   "",
 				ToolCalls: []LMStudioToolCall{toolCallObj},
 			})
 
-			messages = append(messages, LMStudioMessage{
+			request.Messages = append(request.Messages, LMStudioMessage{
 				Role:       "tool",
 				Content:    toolResult,
 				ToolCallID: toolCall.ID,
@@ -300,53 +166,104 @@ func (m *LMStudioModel) QueryWithTools(ctx context.Context, prompt string, tools
 		}
 
 		// Send a follow-up request with the tool results
-		reqBody.Messages = messages
-		reqBody.Tools = []LMStudioTool{} // Empty array instead of nil
-		reqBody.ToolChoice = ""          // Empty string instead of nil
+		//request.Messages = messages
+		//reqBody.Tools = []LMStudioTool{} // Empty array instead of nil
+		//reqBody.ToolChoice = ""          // Empty string instead of nil
 
-		reqBytes, err = json.Marshal(reqBody)
+		// Current implementation hard codes sending the request again if there were tool calls
+		response, err = m.sendRequest(ctx, request)
 		if err != nil {
-			return "", err
-		}
-		if m.debug {
-			fmt.Printf("DEBUG: LMStudio HTTP Request: %s\n", string(reqBytes))
-		}
-
-		req, err = http.NewRequestWithContext(ctx, "POST", m.apiURL, bytes.NewBuffer(reqBytes))
-		if err != nil {
-			return "", err
-		}
-		req.Header.Set("Content-Type", "application/json")
-
-		resp, err = http.DefaultClient.Do(req)
-		if err != nil {
-			return "", err
-		}
-		defer resp.Body.Close()
-
-		if m.debug {
-			body, _ := httputil.DumpResponse(resp, true)
-			fmt.Printf("DEBUG: LMStudio HTTP Response: %s\n", string(body))
-		}
-
-		if resp.StatusCode != http.StatusOK {
-			bodyBytes, _ := io.ReadAll(resp.Body)
-			return "", fmt.Errorf("failed to generate response: status code %d, response: %s", resp.StatusCode, string(bodyBytes))
-		}
-
-		if err := json.NewDecoder(resp.Body).Decode(&chatResp); err != nil {
-			return "", err
-		}
-
-		if len(chatResp.Choices) == 0 {
-			return "", fmt.Errorf("no response generated")
+			return "", fmt.Errorf("error sending follow-up request: %w", err)
 		}
 	}
 
 	if m.debug {
-		fmt.Printf("DEBUG: LMStudio decoded choices: %v\n", chatResp)
+		fmt.Printf("DEBUG: LMStudio decoded choices: %v\n", response)
 	}
 
-	// Trim any leading/trailing whitespace
-	return strings.TrimSpace(chatResp.Choices[0].Message.Content), nil
+	// Return only the content of the first choice
+	return strings.TrimSpace(response.Choices[0].Message.Content), nil
+}
+
+func (m *LMStudioModel) getRequest(prompt string, tools []Tool) LMStudioChatRequest {
+	// Get default config for task queries
+	config := defaultLLMConfig()
+
+	// Build messages array with the proper role structure
+	messages := []LMStudioMessage{
+		{
+			Role:    "system",
+			Content: config.SystemPrompt,
+		},
+		{
+			Role:    "user",
+			Content: prompt,
+		},
+	}
+
+	// Convert tools to LMStudioTool format
+	lmStudioTools := make([]LMStudioTool, len(tools))
+	for i, tool := range tools {
+		lmStudioTools[i] = LMStudioTool{
+			Type: "function",
+			Function: LMStudioToolFunction{
+				Name:        tool.Name(),
+				Description: tool.Description(),
+				Parameters:  tool.Parameters(),
+				Strict:      true,
+			},
+		}
+	}
+
+	return LMStudioChatRequest{
+		Model:       m.name,
+		Messages:    messages,
+		MaxTokens:   config.MaxTokens,
+		Temperature: config.Temperature,
+		Stop:        config.StopSequences,
+		Tools:       lmStudioTools,
+	}
+}
+
+func (m *LMStudioModel) sendRequest(ctx context.Context, request LMStudioChatRequest) (LMStudioChatResponse, error) {
+	reqBytes, err := json.Marshal(request)
+	if err != nil {
+		return LMStudioChatResponse{}, err
+	}
+	if m.debug {
+		fmt.Printf("DEBUG: LMStudio HTTP Request: %s\n", string(reqBytes))
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", m.apiURL, bytes.NewBuffer(reqBytes))
+	if err != nil {
+		return LMStudioChatResponse{}, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return LMStudioChatResponse{}, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		return LMStudioChatResponse{}, fmt.Errorf("failed to generate response: status code %d, response: %s", resp.StatusCode, string(bodyBytes))
+	}
+
+	if m.debug {
+		body, _ := httputil.DumpResponse(resp, true)
+		fmt.Printf("DEBUG: LMStudio HTTP Response: %s\n", string(body))
+	}
+
+	var chatResp LMStudioChatResponse
+	if err := json.NewDecoder(resp.Body).Decode(&chatResp); err != nil {
+		return LMStudioChatResponse{}, err
+	}
+
+	if len(chatResp.Choices) == 0 {
+		return chatResp, fmt.Errorf("no response generated")
+	}
+
+	return chatResp, nil
 }
