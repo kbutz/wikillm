@@ -31,8 +31,12 @@ func NewAgent(model models.LLMModel, tools []models.Tool) *Agent {
 func (a *Agent) Run() {
 	scanner := bufio.NewScanner(os.Stdin)
 
-	fmt.Println("LLM Agent To-Do List")
+	fmt.Println("LLM Agent with Tools")
 	fmt.Printf("Using model: %s\n", a.model.Name())
+	fmt.Println("Available tools:")
+	for _, tool := range a.tools {
+		fmt.Printf("- %s: %s\n", tool.Name(), strings.Split(tool.Description(), "\n")[0])
+	}
 	fmt.Println("Type 'exit' to quit")
 
 	for {
