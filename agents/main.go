@@ -2,9 +2,10 @@ package main
 
 import (
 	"flag"
+	"log"
+
 	"github.com/kbutz/wikillm/agents/models"
 	"github.com/kbutz/wikillm/agents/tools"
-	"log"
 )
 
 // Parse command line flags
@@ -13,26 +14,29 @@ func parseFlags() Config {
 	modelProvider := flag.String("provider", "lmstudio", "Model provider to use (lmstudio or ollama)")
 	port := flag.Int("port", 0, "HTTP server port (0 to disable)")
 	todoFilePath := flag.String("todo-file", "todo.txt", "Path to the to-do list file")
+	memoryFilePath := flag.String("memory-file", "memory.txt", "Path to the memory file")
 	debug := flag.Bool("debug", false, "Enable debug mode")
 
 	flag.Parse()
 
 	return Config{
-		ModelName:     *modelName,
-		ModelProvider: *modelProvider,
-		Port:          *port,
-		TodoFilePath:  *todoFilePath,
-		Debug:         *debug,
+		ModelName:      *modelName,
+		ModelProvider:  *modelProvider,
+		Port:           *port,
+		TodoFilePath:   *todoFilePath,
+		MemoryFilePath: *memoryFilePath,
+		Debug:          *debug,
 	}
 }
 
 // Config Configuration options for the application
 type Config struct {
-	ModelName     string // Name of the LLM model to use
-	ModelProvider string // Provider to use (lmstudio or ollama)
-	Port          int    // HTTP server port
-	TodoFilePath  string // Path to the to-do list file
-	Debug         bool   // Enable debug mode
+	ModelName      string // Name of the LLM model to use
+	ModelProvider  string // Provider to use (lmstudio or ollama)
+	Port           int    // HTTP server port
+	TodoFilePath   string // Path to the to-do list file
+	MemoryFilePath string // Path to the memory file
+	Debug          bool   // Enable debug mode
 }
 
 func main() {
@@ -47,8 +51,10 @@ func main() {
 
 	// Initialize the tools
 	todoTool := tools.NewTodoListTool(config.TodoFilePath)
-	// Create the agent
-	agent := NewAgent(model, []models.Tool{todoTool})
+	memoryTool := tools.NewFileMemoryTool(config.MemoryFilePath)
+
+	// Create the agent with all tools
+	agent := NewAgent(model, []models.Tool{todoTool, memoryTool})
 
 	// Start the interactive session
 	agent.Run()
