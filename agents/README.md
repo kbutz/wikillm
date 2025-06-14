@@ -1,6 +1,6 @@
 # WikiLLM Agents
 
-WikiLLM Agents is a playground repo to help me experiment with building interactive tool using agents using large language models (LLMs). This project provides a simple command-line interface for managing a to-do list, allowing you to add, remove, and analyze tasks using natural language commands.
+WikiLLM Agents is a playground repo to help me experiment with building interactive tool using agents using large language models (LLMs). This project provides a simple command-line interface for managing a to-do list with an advanced memory system, allowing you to add, remove, and analyze tasks using natural language commands while maintaining context across conversations.
 
 ## Prerequisites
 
@@ -60,7 +60,7 @@ Run the application with the following command:
 ./agents
 ```
 
-By default, this will use LM Studio as the provider and will look for a to-do list file named "todo.txt" in the current directory.
+By default, this will use LM Studio as the provider, look for a to-do list file named "todo.txt" in the current directory, and enable the enhanced memory system.
 
 ### Command-Line Options
 
@@ -69,11 +69,14 @@ You can customize the behavior with these command-line flags:
 - `--model`: Name of the LLM model to use (default: "default")
 - `--provider`: Model provider to use, either "lmstudio" or "ollama" (default: "lmstudio")
 - `--todo-file`: Path to the to-do list file (default: "todo.txt")
+- `--memory-file`: Path to the simple memory file (default: "memory.txt")
+- `--memory-dir`: Directory for enhanced memory storage (default: "memory")
+- `--enhanced-memory`: Use enhanced memory system (default: true)
 - `--debug`: Enable debug mode for more detailed logs (default: false)
 
 Example:
 ```
-./agents --model mistral --provider ollama --todo-file my_tasks.txt --debug
+./agents --model mistral --provider ollama --todo-file my_tasks.txt --enhanced-memory=true --debug
 ```
 
 ### Interacting with the Agent
@@ -98,6 +101,16 @@ You can now interact with the agent using natural language. Here are some exampl
 - "How much time do I need to complete all my tasks?"
 
 Type `exit` to quit the application.
+
+## Enhanced Memory System
+
+The agent now includes an advanced memory system that automatically:
+- **Remembers** project details, preferences, and decisions
+- **Retrieves** relevant context for your queries
+- **Maintains** conversation history across sessions
+- **Learns** your work patterns and preferences
+
+For detailed information about the memory system, see [MEMORY_GUIDE.md](MEMORY_GUIDE.md).
 
 ## To-Do List Commands
 
