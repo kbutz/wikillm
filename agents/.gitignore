@@ -1,3 +1,4 @@
 /vendor
-
+*.txt
 todo.txt
+/memory
