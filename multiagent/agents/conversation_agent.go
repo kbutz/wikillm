@@ -330,6 +330,7 @@ func (a *ConversationAgent) delegateToSpecialists(ctx context.Context, msg *mult
 			Description: fmt.Sprintf("Handle user request: %s", msg.Content),
 			Priority:    msg.Priority,
 			Requester:   a.id,
+			Assignee:    multiagent.AgentID("coordinator_agent"), // Explicitly assign to coordinator_agent
 			Status:      multiagent.TaskStatusPending,
 			CreatedAt:   time.Now(),
 			Input: map[string]interface{}{

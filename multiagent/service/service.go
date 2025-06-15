@@ -2,11 +2,11 @@ package service
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/kbutz/wikillm/multiagent"
@@ -18,12 +18,14 @@ import (
 
 // MultiAgentService provides a complete multi-agent system with memory, tools, and orchestration
 type MultiAgentService struct {
-	memoryStore  multiagent.MemoryStore
-	orchestrator multiagent.Orchestrator
-	agents       map[multiagent.AgentID]multiagent.Agent
-	tools        map[string]multiagent.Tool
-	llmProvider  multiagent.LLMProvider
-	baseDir      string
+	memoryStore     multiagent.MemoryStore
+	orchestrator    multiagent.Orchestrator
+	agents          map[multiagent.AgentID]multiagent.Agent
+	tools           map[string]multiagent.Tool
+	llmProvider     multiagent.LLMProvider
+	baseDir         string
+	pendingRequests map[string]chan string // Track pending user requests
+	requestsMutex   sync.RWMutex
 }
 
 // ServiceConfig holds configuration for creating a MultiAgentService
@@ -54,12 +56,13 @@ func NewMultiAgentService(config ServiceConfig) (*MultiAgentService, error) {
 	})
 
 	service := &MultiAgentService{
-		memoryStore:  memoryStore,
-		orchestrator: orch,
-		agents:       make(map[multiagent.AgentID]multiagent.Agent),
-		tools:        make(map[string]multiagent.Tool),
-		llmProvider:  config.LLMProvider,
-		baseDir:      config.BaseDir,
+		memoryStore:     memoryStore,
+		orchestrator:    orch,
+		agents:          make(map[multiagent.AgentID]multiagent.Agent),
+		tools:           make(map[string]multiagent.Tool),
+		llmProvider:     config.LLMProvider,
+		baseDir:         config.BaseDir,
+		pendingRequests: make(map[string]chan string),
 	}
 
 	// Initialize tools
@@ -107,20 +110,34 @@ func (s *MultiAgentService) Stop(ctx context.Context) error {
 		return fmt.Errorf("failed to stop orchestrator: %w", err)
 	}
 
+	// Close any pending request channels
+	s.requestsMutex.Lock()
+	for _, ch := range s.pendingRequests {
+		close(ch)
+	}
+	s.pendingRequests = make(map[string]chan string)
+	s.requestsMutex.Unlock()
+
 	log.Println("MultiAgentService stopped successfully")
 	return nil
 }
 
 // ProcessUserMessage processes a user message and returns a response
 func (s *MultiAgentService) ProcessUserMessage(ctx context.Context, userID string, message string) (string, error) {
-	// Create a conversation ID if not provided
+	// Create a conversation ID
 	conversationID := fmt.Sprintf("conv_%s_%d", userID, time.Now().UnixNano())
+
+	// Instead of complex routing, directly call the conversation agent
+	conversationAgent, exists := s.agents["conversation_agent"]
+	if !exists {
+		return "", fmt.Errorf("conversation agent not found")
+	}
 
 	// Create a message for the conversation agent
 	msg := &multiagent.Message{
 		ID:        fmt.Sprintf("msg_user_%d", time.Now().UnixNano()),
-		From:      multiagent.AgentID(userID),
-		To:        []multiagent.AgentID{multiagent.AgentID("conversation_agent")},
+		From:      multiagent.AgentID("user_service"), // Use service as sender
+		To:        []multiagent.AgentID{"conversation_agent"},
 		Type:      multiagent.MessageTypeRequest,
 		Content:   message,
 		Priority:  multiagent.PriorityMedium,
@@ -128,46 +145,21 @@ func (s *MultiAgentService) ProcessUserMessage(ctx context.Context, userID strin
 		Context: map[string]interface{}{
 			"conversation_id": conversationID,
 			"source":          "user",
+			"user_id":         userID,
 		},
 	}
 
-	// Route the message through the orchestrator
-	if err := s.orchestrator.RouteMessage(ctx, msg); err != nil {
-		return "", fmt.Errorf("failed to route message: %w", err)
-	}
-
-	// For synchronous API, we need to wait for a response
-	// In a real implementation, this would be handled asynchronously
-	// For now, we'll wait a reasonable amount of time for the LLM to respond
-	time.Sleep(1 * time.Second)
-
-	// Get the conversation from memory
-	convKey := fmt.Sprintf("conversation:%s", conversationID)
-	convInterface, err := s.memoryStore.Get(ctx, convKey)
+	// Handle the message directly with the conversation agent
+	response, err := conversationAgent.HandleMessage(ctx, msg)
 	if err != nil {
-		return "I'm processing your request. Please check back in a moment.", nil
+		return "", fmt.Errorf("failed to process message with conversation agent: %w", err)
 	}
 
-	// Try to extract the latest assistant response
-	var conversation multiagent.ConversationContext
-	convData, err := json.Marshal(convInterface)
-	if err != nil {
-		return "I'm working on your request. Please wait a moment.", nil
+	if response != nil {
+		return response.Content, nil
 	}
 
-	if err := json.Unmarshal(convData, &conversation); err != nil {
-		return "I'm analyzing your message. I'll respond shortly.", nil
-	}
-
-	// Find the latest assistant response
-	for i := len(conversation.Messages) - 1; i >= 0; i-- {
-		msg := conversation.Messages[i]
-		if msg.Role == "assistant" {
-			return msg.Content, nil
-		}
-	}
-
-	return "I've received your message and I'm working on a response.", nil
+	return "I apologize, but I couldn't process your request at this time.", nil
 }
 
 // GetAgent returns an agent by ID

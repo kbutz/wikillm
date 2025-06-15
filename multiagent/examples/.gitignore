@@ -1,0 +1,7 @@
+# WikiLLM Memory Data
+wikillm_memory/
+
+# Other common ignores
+*.log
+*.tmp
+.DS_Store
