@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -21,6 +22,9 @@ type DefaultOrchestrator struct {
 	startTime    time.Time
 	stopChan     chan struct{}
 	wg           sync.WaitGroup
+	running      bool
+	userResponseHandlers map[string]func(string) // Map of response key to handler function
+	handlersMutex sync.RWMutex
 }
 
 // OrchestratorConfig holds configuration for creating an orchestrator
@@ -47,6 +51,8 @@ func NewOrchestrator(config OrchestratorConfig) *DefaultOrchestrator {
 		eventQueue:   make(chan *multiagent.Event, config.EventQueueSize),
 		memoryStore:  config.MemoryStore,
 		stopChan:     make(chan struct{}),
+		running:      false,
+		userResponseHandlers: make(map[string]func(string)),
 	}
 }
 
@@ -56,7 +62,7 @@ func (o *DefaultOrchestrator) RegisterAgent(agent multiagent.Agent) error {
 	defer o.mu.Unlock()
 
 	agentID := agent.ID()
-	
+
 	// Check if agent already registered
 	if _, exists := o.agents[agentID]; exists {
 		return fmt.Errorf("agent %s already registered", agentID)
@@ -64,32 +70,12 @@ func (o *DefaultOrchestrator) RegisterAgent(agent multiagent.Agent) error {
 
 	// Add to agent maps
 	o.agents[agentID] = agent
-	
+
 	agentType := agent.Type()
 	if o.agentsByType[agentType] == nil {
 		o.agentsByType[agentType] = []multiagent.Agent{}
 	}
 	o.agentsByType[agentType] = append(o.agentsByType[agentType], agent)
-
-	// Emit registration event
-	event := &multiagent.Event{
-		ID:        fmt.Sprintf("event_%d", time.Now().UnixNano()),
-		Type:      multiagent.EventAgentRegistered,
-		Source:    string(agentID),
-		Timestamp: time.Now(),
-		Data: map[string]interface{}{
-			"agent_id":   agentID,
-			"agent_type": agentType,
-			"agent_name": agent.Name(),
-		},
-	}
-	
-	select {
-	case o.eventQueue <- event:
-	default:
-		// Event queue full, log but don't block
-		fmt.Printf("Warning: Event queue full, dropping event %s\n", event.ID)
-	}
 
 	// Store registration in memory
 	if o.memoryStore != nil {
@@ -118,14 +104,14 @@ func (o *DefaultOrchestrator) UnregisterAgent(agentID multiagent.AgentID) error 
 	// Stop the agent
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	
+
 	if err := agent.Stop(ctx); err != nil {
 		return fmt.Errorf("failed to stop agent %s: %w", agentID, err)
 	}
 
 	// Remove from maps
 	delete(o.agents, agentID)
-	
+
 	// Remove from type map
 	agentType := agent.Type()
 	if agents, exists := o.agentsByType[agentType]; exists {
@@ -135,29 +121,12 @@ func (o *DefaultOrchestrator) UnregisterAgent(agentID multiagent.AgentID) error 
 				newAgents = append(newAgents, a)
 			}
 		}
-		
+
 		if len(newAgents) > 0 {
 			o.agentsByType[agentType] = newAgents
 		} else {
 			delete(o.agentsByType, agentType)
 		}
-	}
-
-	// Emit unregistration event
-	event := &multiagent.Event{
-		ID:        fmt.Sprintf("event_%d", time.Now().UnixNano()),
-		Type:      multiagent.EventAgentUnregistered,
-		Source:    string(agentID),
-		Timestamp: time.Now(),
-		Data: map[string]interface{}{
-			"agent_id": agentID,
-		},
-	}
-	
-	select {
-	case o.eventQueue <- event:
-	default:
-		fmt.Printf("Warning: Event queue full, dropping event %s\n", event.ID)
 	}
 
 	return nil
@@ -205,37 +174,20 @@ func (o *DefaultOrchestrator) RouteMessage(ctx context.Context, msg *multiagent.
 		o.memoryStore.Store(ctx, msgKey, msg)
 	}
 
-	// Add to message queue
-	select {
-	case o.messageQueue <- msg:
-		// Emit message sent event
-		event := &multiagent.Event{
-			ID:        fmt.Sprintf("event_%d", time.Now().UnixNano()),
-			Type:      multiagent.EventMessageSent,
-			Source:    string(msg.From),
-			Timestamp: time.Now(),
-			Data: map[string]interface{}{
-				"message_id": msg.ID,
-				"from":       msg.From,
-				"to":         msg.To,
-				"type":       msg.Type,
-			},
-		}
-		
+	// If orchestrator is running, add to message queue
+	if o.running {
 		select {
-		case o.eventQueue <- event:
+		case o.messageQueue <- msg:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
 		default:
-			// Event queue full
+			return fmt.Errorf("message queue full")
 		}
-		
-		return nil
-		
-	case <-ctx.Done():
-		return ctx.Err()
-		
-	default:
-		return fmt.Errorf("message queue full")
 	}
+
+	// If not running, route directly
+	return o.routeMessageToAgents(ctx, msg)
 }
 
 // BroadcastMessage sends a message to all agents
@@ -249,7 +201,7 @@ func (o *DefaultOrchestrator) BroadcastMessage(ctx context.Context, msg *multiag
 
 	// Set recipients to all agents
 	msg.To = agentIDs
-	
+
 	return o.RouteMessage(ctx, msg)
 }
 
@@ -267,16 +219,29 @@ func (o *DefaultOrchestrator) AssignTask(ctx context.Context, task multiagent.Ta
 	task.Status = multiagent.TaskStatusPending
 	task.CreatedAt = time.Now()
 
-	// Find best agent for the task
-	agent, err := o.findBestAgent(task)
-	if err != nil {
-		return "", err
+	var agent multiagent.Agent
+	var err error
+
+	// Check if task already has an assignee
+	if task.Assignee != "" {
+		// Use the specified assignee
+		var exists bool
+		agent, exists = o.agents[task.Assignee]
+		if !exists {
+			return "", fmt.Errorf("specified assignee %s not found", task.Assignee)
+		}
+	} else {
+		// Find best agent for the task
+		agent, err = o.findBestAgent(task)
+		if err != nil {
+			return "", err
+		}
+		// Assign task
+		task.Assignee = agent.ID()
 	}
 
-	// Assign task
-	task.Assignee = agent.ID()
 	task.Status = multiagent.TaskStatusAssigned
-	
+
 	// Store task
 	o.tasks[task.ID] = &task
 
@@ -289,7 +254,7 @@ func (o *DefaultOrchestrator) AssignTask(ctx context.Context, task multiagent.Ta
 	// Send task to agent
 	taskMsg := &multiagent.Message{
 		ID:       fmt.Sprintf("msg_%d", time.Now().UnixNano()),
-		From:     multiagent.AgentID("orchestrator"),
+		From:     multiagent.AgentID("coordinator_agent"),
 		To:       []multiagent.AgentID{agent.ID()},
 		Type:     multiagent.MessageTypeCommand,
 		Content:  fmt.Sprintf("Execute task %s: %s", task.ID, task.Description),
@@ -301,24 +266,6 @@ func (o *DefaultOrchestrator) AssignTask(ctx context.Context, task multiagent.Ta
 		task.Status = multiagent.TaskStatusFailed
 		task.Error = fmt.Sprintf("Failed to send task to agent: %v", err)
 		return "", err
-	}
-
-	// Emit task assigned event
-	event := &multiagent.Event{
-		ID:        fmt.Sprintf("event_%d", time.Now().UnixNano()),
-		Type:      multiagent.EventTaskAssigned,
-		Source:    "orchestrator",
-		Timestamp: time.Now(),
-		Data: map[string]interface{}{
-			"task_id":  task.ID,
-			"assignee": task.Assignee,
-		},
-	}
-	
-	select {
-	case o.eventQueue <- event:
-	default:
-		// Event queue full
 	}
 
 	return agent.ID(), nil
@@ -349,21 +296,14 @@ func (o *DefaultOrchestrator) GetTaskStatus(ctx context.Context, taskID string) 
 // Start begins the orchestrator's operation
 func (o *DefaultOrchestrator) Start(ctx context.Context) error {
 	o.mu.Lock()
-	if o.startTime.IsZero() {
-		o.startTime = time.Now()
-	}
-	o.mu.Unlock()
+	defer o.mu.Unlock()
 
-	// Start all registered agents
-	for _, agent := range o.agents {
-		if err := agent.Initialize(ctx); err != nil {
-			return fmt.Errorf("failed to initialize agent %s: %w", agent.ID(), err)
-		}
-		
-		if err := agent.Start(ctx); err != nil {
-			return fmt.Errorf("failed to start agent %s: %w", agent.ID(), err)
-		}
+	if o.running {
+		return fmt.Errorf("orchestrator is already running")
 	}
+
+	o.startTime = time.Now()
+	o.running = true
 
 	// Start message router
 	o.wg.Add(1)
@@ -382,16 +322,16 @@ func (o *DefaultOrchestrator) Start(ctx context.Context) error {
 
 // Stop halts the orchestrator's operation
 func (o *DefaultOrchestrator) Stop(ctx context.Context) error {
+	o.mu.Lock()
+	if !o.running {
+		o.mu.Unlock()
+		return nil
+	}
+	o.running = false
+	o.mu.Unlock()
+
 	// Signal stop
 	close(o.stopChan)
-
-	// Stop all agents
-	var errors []error
-	for _, agent := range o.agents {
-		if err := agent.Stop(ctx); err != nil {
-			errors = append(errors, fmt.Errorf("failed to stop agent %s: %w", agent.ID(), err))
-		}
-	}
 
 	// Wait for goroutines to finish
 	done := make(chan struct{})
@@ -407,10 +347,6 @@ func (o *DefaultOrchestrator) Stop(ctx context.Context) error {
 		return ctx.Err()
 	}
 
-	if len(errors) > 0 {
-		return fmt.Errorf("errors during shutdown: %v", errors)
-	}
-
 	return nil
 }
 
@@ -419,8 +355,13 @@ func (o *DefaultOrchestrator) GetSystemHealth() multiagent.SystemHealth {
 	o.mu.RLock()
 	defer o.mu.RUnlock()
 
+	status := multiagent.SystemStatusOffline
+	if o.running {
+		status = multiagent.SystemStatusHealthy
+	}
+
 	health := multiagent.SystemHealth{
-		Status:       multiagent.SystemStatusHealthy,
+		Status:       status,
 		TotalAgents:  len(o.agents),
 		ActiveAgents: 0,
 		PendingTasks: 0,
@@ -456,13 +397,47 @@ func (o *DefaultOrchestrator) GetSystemHealth() multiagent.SystemHealth {
 	}
 
 	// Determine overall system status
-	if errorCount > len(o.agents)/2 {
-		health.Status = multiagent.SystemStatusCritical
-	} else if errorCount > 0 || health.MessageQueue > 800 {
-		health.Status = multiagent.SystemStatusDegraded
+	if o.running {
+		if errorCount > len(o.agents)/2 {
+			health.Status = multiagent.SystemStatusCritical
+		} else if errorCount > 0 || health.MessageQueue > 800 {
+			health.Status = multiagent.SystemStatusDegraded
+		}
 	}
 
 	return health
+}
+
+// RegisterUserResponseHandler registers a handler for user responses
+func (o *DefaultOrchestrator) RegisterUserResponseHandler(responseKey string, handler func(string)) {
+	o.handlersMutex.Lock()
+	defer o.handlersMutex.Unlock()
+	o.userResponseHandlers[responseKey] = handler
+}
+
+// UnregisterUserResponseHandler removes a user response handler
+func (o *DefaultOrchestrator) UnregisterUserResponseHandler(responseKey string) {
+	o.handlersMutex.Lock()
+	defer o.handlersMutex.Unlock()
+	delete(o.userResponseHandlers, responseKey)
+}
+
+// handleUserResponse handles responses meant for users
+func (o *DefaultOrchestrator) handleUserResponse(ctx context.Context, response *multiagent.Message) {
+	// Extract the response key from the recipient
+	if len(response.To) == 0 {
+		return
+	}
+	
+	responseKey := string(response.To[0])
+	
+	o.handlersMutex.RLock()
+	handler, exists := o.userResponseHandlers[responseKey]
+	o.handlersMutex.RUnlock()
+	
+	if exists && handler != nil {
+		handler(response.Content)
+	}
 }
 
 // Internal helper methods
@@ -474,7 +449,7 @@ func (o *DefaultOrchestrator) findBestAgent(task multiagent.Task) (multiagent.Ag
 
 	for _, agent := range o.agents {
 		state := agent.GetState()
-		
+
 		// Skip unavailable agents
 		if state.Status != multiagent.AgentStatusIdle && state.Status != multiagent.AgentStatusBusy {
 			continue
@@ -509,17 +484,17 @@ func (o *DefaultOrchestrator) messageRouter(ctx context.Context) {
 		select {
 		case msg := <-o.messageQueue:
 			o.routeMessageToAgents(ctx, msg)
-			
+
 		case <-o.stopChan:
 			return
-			
+
 		case <-ctx.Done():
 			return
 		}
 	}
 }
 
-func (o *DefaultOrchestrator) routeMessageToAgents(ctx context.Context, msg *multiagent.Message) {
+func (o *DefaultOrchestrator) routeMessageToAgents(ctx context.Context, msg *multiagent.Message) error {
 	o.mu.RLock()
 	defer o.mu.RUnlock()
 
@@ -532,31 +507,32 @@ func (o *DefaultOrchestrator) routeMessageToAgents(ctx context.Context, msg *mul
 			continue
 		}
 
-		// Send message to agent (non-blocking)
+		// Handle the message directly with the agent
 		go func(a multiagent.Agent, m *multiagent.Message) {
-			if err := a.SendMessage(ctx, m); err != nil {
-				fmt.Printf("Error sending message %s to agent %s: %v\n", m.ID, a.ID(), err)
+			// Process the message with the agent
+			response, err := a.HandleMessage(ctx, m)
+			if err != nil {
+				fmt.Printf("Error handling message %s with agent %s: %v\n", m.ID, a.ID(), err)
+				return
 			}
 
-			// Emit message received event
-			event := &multiagent.Event{
-				ID:        fmt.Sprintf("event_%d", time.Now().UnixNano()),
-				Type:      multiagent.EventMessageReceived,
-				Source:    string(a.ID()),
-				Timestamp: time.Now(),
-				Data: map[string]interface{}{
-					"message_id": m.ID,
-					"from":       m.From,
-				},
-			}
-			
-			select {
-			case o.eventQueue <- event:
-			default:
-				// Event queue full
+			// If we got a response, handle it appropriately
+			if response != nil {
+				// Check if the response is meant for a user (starts with "user_response_")
+				if strings.HasPrefix(string(response.To[0]), "user_response_") {
+					// This is a response to a user request - handle it via callback
+					o.handleUserResponse(ctx, response)
+				} else if response.From != m.From {
+					// Route the response back through the orchestrator for agent-to-agent communication
+					if err := o.RouteMessage(ctx, response); err != nil {
+						fmt.Printf("Error routing response from agent %s: %v\n", a.ID(), err)
+					}
+				}
 			}
 		}(agent, msg)
 	}
+
+	return nil
 }
 
 func (o *DefaultOrchestrator) eventProcessor(ctx context.Context) {
@@ -566,10 +542,10 @@ func (o *DefaultOrchestrator) eventProcessor(ctx context.Context) {
 		select {
 		case event := <-o.eventQueue:
 			o.processEvent(ctx, event)
-			
+
 		case <-o.stopChan:
 			return
-			
+
 		case <-ctx.Done():
 			return
 		}
@@ -595,7 +571,7 @@ func (o *DefaultOrchestrator) processEvent(ctx context.Context, event *multiagen
 			}
 			o.mu.Unlock()
 		}
-		
+
 	case multiagent.EventTaskFailed:
 		// Update task status
 		if taskID, ok := event.Data["task_id"].(string); ok {
@@ -621,7 +597,7 @@ func (o *DefaultOrchestrator) healthMonitor(ctx context.Context) {
 		select {
 		case <-ticker.C:
 			health := o.GetSystemHealth()
-			
+
 			// Store health snapshot
 			if o.memoryStore != nil {
 				healthKey := fmt.Sprintf("orchestrator:health:%d", time.Now().Unix())
@@ -632,10 +608,10 @@ func (o *DefaultOrchestrator) healthMonitor(ctx context.Context) {
 			if health.Status != multiagent.SystemStatusHealthy {
 				fmt.Printf("System health warning: %s\n", health.Status)
 			}
-			
+
 		case <-o.stopChan:
 			return
-			
+
 		case <-ctx.Done():
 			return
 		}

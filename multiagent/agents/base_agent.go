@@ -2,6 +2,7 @@ package agents
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
@@ -25,6 +26,7 @@ type BaseAgent struct {
 	llmProvider  multiagent.LLMProvider
 	memoryStore  multiagent.MemoryStore
 	orchestrator multiagent.Orchestrator
+	running      bool // Add explicit running flag
 }
 
 // BaseAgentConfig holds configuration for creating a base agent
@@ -54,6 +56,7 @@ func NewBaseAgent(config BaseAgentConfig) *BaseAgent {
 		orchestrator: config.Orchestrator,
 		messageChan:  make(chan *multiagent.Message, 100),
 		stopChan:     make(chan struct{}),
+		running:      false,
 		state: multiagent.AgentState{
 			Status:       multiagent.AgentStatusOffline,
 			Capabilities: config.Capabilities,
@@ -100,7 +103,7 @@ func (a *BaseAgent) Initialize(ctx context.Context) error {
 			"initialized":  time.Now(),
 			"capabilities": a.capabilities,
 		}
-		
+
 		key := fmt.Sprintf("agent:%s:init", a.id)
 		if err := a.memoryStore.Store(ctx, key, initData); err != nil {
 			return fmt.Errorf("failed to store initialization data: %w", err)
@@ -113,35 +116,24 @@ func (a *BaseAgent) Initialize(ctx context.Context) error {
 // Start begins the agent's operation
 func (a *BaseAgent) Start(ctx context.Context) error {
 	a.mu.Lock()
-	if a.state.Status != multiagent.AgentStatusStarting && 
-	   a.state.Status != multiagent.AgentStatusOffline {
-		a.mu.Unlock()
+	defer a.mu.Unlock()
+
+	// Check if already running
+	if a.running {
 		return fmt.Errorf("agent %s is already running", a.id)
 	}
-	
+
+	// Reset state for fresh start
 	a.state.Status = multiagent.AgentStatusIdle
 	a.state.LastActivity = time.Now()
-	a.mu.Unlock()
+	a.running = true
+
+	// Create new channels to ensure clean state
+	a.messageChan = make(chan *multiagent.Message, 100)
+	a.stopChan = make(chan struct{})
 
 	// Start message processing loop
 	go a.messageLoop(ctx)
-
-	// Announce agent availability
-	announcement := &multiagent.Message{
-		ID:        fmt.Sprintf("msg_%s_%d", a.id, time.Now().UnixNano()),
-		From:      a.id,
-		To:        []multiagent.AgentID{multiagent.AgentID("coordinator")},
-		Type:      multiagent.MessageTypeNotification,
-		Content:   fmt.Sprintf("Agent %s (%s) is now online", a.name, a.id),
-		Priority:  multiagent.PriorityMedium,
-		Timestamp: time.Now(),
-	}
-
-	if a.orchestrator != nil {
-		if err := a.orchestrator.RouteMessage(ctx, announcement); err != nil {
-			return fmt.Errorf("failed to announce agent availability: %w", err)
-		}
-	}
 
 	return nil
 }
@@ -151,16 +143,22 @@ func (a *BaseAgent) Stop(ctx context.Context) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	if a.state.Status == multiagent.AgentStatusOffline {
+	if !a.running {
 		return nil
 	}
 
 	// Update state
 	a.state.Status = multiagent.AgentStatusOffline
 	a.state.LastActivity = time.Now()
+	a.running = false
 
 	// Close stop channel to signal message loop to exit
-	close(a.stopChan)
+	select {
+	case <-a.stopChan:
+		// Already closed
+	default:
+		close(a.stopChan)
+	}
 
 	// Store shutdown event
 	if a.memoryStore != nil {
@@ -170,7 +168,7 @@ func (a *BaseAgent) Stop(ctx context.Context) error {
 			"workload":  a.state.Workload,
 			"last_task": a.state.CurrentTask,
 		}
-		
+
 		key := fmt.Sprintf("agent:%s:shutdown:%d", a.id, time.Now().Unix())
 		if err := a.memoryStore.Store(ctx, key, shutdownData); err != nil {
 			// Log error but don't fail shutdown
@@ -185,14 +183,14 @@ func (a *BaseAgent) Stop(ctx context.Context) error {
 func (a *BaseAgent) GetState() multiagent.AgentState {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
-	
+
 	// Create a copy to avoid external modifications
 	stateCopy := a.state
 	stateCopy.Metadata = make(map[string]interface{})
 	for k, v := range a.state.Metadata {
 		stateCopy.Metadata[k] = v
 	}
-	
+
 	return stateCopy
 }
 
@@ -201,17 +199,17 @@ func (a *BaseAgent) SendMessage(ctx context.Context, msg *multiagent.Message) er
 	if a.orchestrator == nil {
 		return fmt.Errorf("no orchestrator configured")
 	}
-	
+
 	// Set sender if not already set
 	if msg.From == "" {
 		msg.From = a.id
 	}
-	
+
 	// Set timestamp if not already set
 	if msg.Timestamp.IsZero() {
 		msg.Timestamp = time.Now()
 	}
-	
+
 	// Route through orchestrator
 	return a.orchestrator.RouteMessage(ctx, msg)
 }
@@ -269,7 +267,7 @@ func (a *BaseAgent) HandleMessage(ctx context.Context, msg *multiagent.Message) 
 func (a *BaseAgent) GetCapabilities() []string {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
-	
+
 	capabilities := make([]string, len(a.capabilities))
 	copy(capabilities, a.capabilities)
 	return capabilities
@@ -278,9 +276,9 @@ func (a *BaseAgent) GetCapabilities() []string {
 // CanHandle checks if the agent can handle a specific message type
 func (a *BaseAgent) CanHandle(messageType multiagent.MessageType) bool {
 	switch messageType {
-	case multiagent.MessageTypeRequest, 
-	     multiagent.MessageTypeQuery,
-	     multiagent.MessageTypeCommand:
+	case multiagent.MessageTypeRequest,
+		multiagent.MessageTypeQuery,
+		multiagent.MessageTypeCommand:
 		return true
 	default:
 		return false
@@ -310,10 +308,10 @@ func (a *BaseAgent) messageLoop(ctx context.Context) {
 				// Send response if acknowledgment was required
 				a.SendMessage(ctx, response)
 			}
-			
+
 		case <-a.stopChan:
 			return
-			
+
 		case <-ctx.Done():
 			return
 		}
@@ -323,11 +321,59 @@ func (a *BaseAgent) messageLoop(ctx context.Context) {
 func (a *BaseAgent) handleRequest(ctx context.Context, msg *multiagent.Message) (*multiagent.Message, error) {
 	// Build context for LLM
 	contextPrompt := a.buildContextPrompt(ctx, msg)
-	
+
 	// Query LLM with available tools
 	response, err := a.llmProvider.QueryWithTools(ctx, contextPrompt, a.tools)
 	if err != nil {
 		return nil, fmt.Errorf("LLM query failed: %w", err)
+	}
+
+	// Store the response in memory for the conversation
+	if a.memoryStore != nil && msg.Context != nil {
+		if conversationID, ok := msg.Context["conversation_id"].(string); ok {
+			// Update the conversation context
+			convKey := fmt.Sprintf("conversation:%s", conversationID)
+
+			// Create or update conversation context
+			var conversation multiagent.ConversationContext
+			if convInterface, err := a.memoryStore.Get(ctx, convKey); err == nil {
+				// Load existing conversation
+				convData, _ := json.Marshal(convInterface)
+				json.Unmarshal(convData, &conversation)
+			} else {
+				// Create new conversation
+				conversation = multiagent.ConversationContext{
+					ID:           conversationID,
+					UserID:       string(msg.From),
+					StartTime:    time.Now(),
+					LastActivity: time.Now(),
+					Messages:     []multiagent.ConversationMessage{},
+					Context:      make(map[string]interface{}),
+					ActiveAgents: []multiagent.AgentID{a.id},
+				}
+			}
+
+			// Add user message if not already there
+			if len(conversation.Messages) == 0 || conversation.Messages[len(conversation.Messages)-1].Content != msg.Content {
+				conversation.Messages = append(conversation.Messages, multiagent.ConversationMessage{
+					Role:      "user",
+					Content:   msg.Content,
+					Timestamp: msg.Timestamp,
+				})
+			}
+
+			// Add assistant response
+			conversation.Messages = append(conversation.Messages, multiagent.ConversationMessage{
+				Role:      "assistant",
+				Content:   response,
+				Timestamp: time.Now(),
+				AgentID:   a.id,
+			})
+			conversation.LastActivity = time.Now()
+
+			// Store updated conversation
+			a.memoryStore.Store(ctx, convKey, conversation)
+		}
 	}
 
 	// Create response message
@@ -352,7 +398,7 @@ func (a *BaseAgent) handleQuery(ctx context.Context, msg *multiagent.Message) (*
 
 	// Build response with memory context
 	contextPrompt := fmt.Sprintf("Based on the following context and query, provide a helpful response.\n\nContext:\n%s\n\nQuery: %s", results, msg.Content)
-	
+
 	response, err := a.llmProvider.Query(ctx, contextPrompt)
 	if err != nil {
 		return nil, fmt.Errorf("LLM query failed: %w", err)
@@ -414,13 +460,13 @@ func (a *BaseAgent) createAcknowledgment(msg *multiagent.Message) *multiagent.Me
 
 func (a *BaseAgent) buildContextPrompt(ctx context.Context, msg *multiagent.Message) string {
 	var contextBuilder strings.Builder
-	
+
 	contextBuilder.WriteString(fmt.Sprintf("You are %s, a %s agent.\n", a.name, a.agentType))
 	contextBuilder.WriteString(fmt.Sprintf("Description: %s\n\n", a.description))
-	
+
 	// Add message context
 	contextBuilder.WriteString(fmt.Sprintf("Request from %s: %s\n", msg.From, msg.Content))
-	
+
 	// Add any additional context from the message
 	if len(msg.Context) > 0 {
 		contextBuilder.WriteString("\nAdditional Context:\n")
@@ -428,7 +474,7 @@ func (a *BaseAgent) buildContextPrompt(ctx context.Context, msg *multiagent.Mess
 			contextBuilder.WriteString(fmt.Sprintf("- %s: %v\n", k, v))
 		}
 	}
-	
+
 	// Add recent memory context
 	if memories := a.getRecentMemories(ctx, 5); len(memories) > 0 {
 		contextBuilder.WriteString("\nRecent Memory:\n")
@@ -436,7 +482,7 @@ func (a *BaseAgent) buildContextPrompt(ctx context.Context, msg *multiagent.Mess
 			contextBuilder.WriteString(fmt.Sprintf("- %v\n", mem.Value))
 		}
 	}
-	
+
 	return contextBuilder.String()
 }
 
