@@ -37,6 +37,9 @@ import (
 	"github.com/kbutz/wikillm/multiagent/tools"
 )
 
+// Import the DefaultOrchestrator type directly to avoid import issues
+type DefaultOrchestrator = orchestrator.DefaultOrchestrator
+
 // LMStudioProvider implements the LLMProvider interface for LMStudio
 type LMStudioProvider struct {
 	ServerURL   string
@@ -345,22 +348,37 @@ func (s *MultiAgentService) Stop(ctx context.Context) error {
 	return nil
 }
 
-// ProcessUserMessage processes a user message and returns a response (FIXED VERSION)
+// ProcessUserMessage processes a user message and returns a response
 func (s *MultiAgentService) ProcessUserMessage(ctx context.Context, userID string, message string) (string, error) {
-	// Create a conversation ID
+	// Create a conversation ID if not provided
 	conversationID := fmt.Sprintf("conv_%s_%d", userID, time.Now().UnixNano())
 
-	// Get the conversation agent directly
-	conversationAgent, exists := s.agents["conversation_agent"]
-	if !exists {
-		return "", fmt.Errorf("conversation agent not found")
+	// Create a response channel to capture the agent's response
+	responseChannel := make(chan string, 1)
+	responseKey := fmt.Sprintf("user_response_%s_%d", userID, time.Now().UnixNano())
+	
+	// Create a handler function that sends to our response channel
+	handler := func(response string) {
+		select {
+		case responseChannel <- response:
+		default:
+			// Channel full, ignore
+		}
+	}
+	
+	// Register the handler with the orchestrator
+	if orch, ok := s.orchestrator.(*DefaultOrchestrator); ok {
+		orch.RegisterUserResponseHandler(responseKey, handler)
+		defer orch.UnregisterUserResponseHandler(responseKey)
+	} else {
+		return "", fmt.Errorf("orchestrator does not support user response handlers")
 	}
 
 	// Create a message for the conversation agent
 	msg := &multiagent.Message{
 		ID:        fmt.Sprintf("msg_user_%d", time.Now().UnixNano()),
-		From:      multiagent.AgentID("user_service"), // Use service as sender instead of user ID
-		To:        []multiagent.AgentID{"conversation_agent"},
+		From:      multiagent.AgentID(responseKey), // Use response key as sender so responses can be routed back
+		To:        []multiagent.AgentID{multiagent.AgentID("conversation_agent")},
 		Type:      multiagent.MessageTypeRequest,
 		Content:   message,
 		Priority:  multiagent.PriorityMedium,
@@ -369,22 +387,24 @@ func (s *MultiAgentService) ProcessUserMessage(ctx context.Context, userID strin
 			"conversation_id": conversationID,
 			"source":          "user",
 			"user_id":         userID,
+			"response_key":    responseKey,
 		},
 	}
 
-	// Handle the message directly with the conversation agent (bypass orchestrator routing)
-	log.Printf("Processing message directly with conversation agent...")
-	response, err := conversationAgent.HandleMessage(ctx, msg)
-	if err != nil {
-		return "", fmt.Errorf("failed to process message with conversation agent: %w", err)
+	// Route the message through the orchestrator
+	if err := s.orchestrator.RouteMessage(ctx, msg); err != nil {
+		return "", fmt.Errorf("failed to route message: %w", err)
 	}
 
-	if response != nil {
-		log.Printf("Got response from conversation agent: %s", response.Content)
-		return response.Content, nil
+	// Wait for response with timeout
+	select {
+	case response := <-responseChannel:
+		return response, nil
+	case <-time.After(45 * time.Second): // Increased timeout for LLM processing
+		return "I'm processing your request. Please check back in a moment.", nil
+	case <-ctx.Done():
+		return "", ctx.Err()
 	}
-
-	return "I apologize, but I couldn't process your request at this time.", nil
 }
 
 // GetAgent returns an agent by ID

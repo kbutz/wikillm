@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -87,8 +88,11 @@ func (a *ConversationAgent) handleConversation(ctx context.Context, msg *multiag
 
 	// Check if we need to delegate to other agents
 	if a.shouldDelegate(msg.Content) {
+		log.Printf("ConversationAgent: Delegating message to specialists: %s", msg.Content[:min(50, len(msg.Content))])
 		return a.delegateToSpecialists(ctx, msg, conversation)
 	}
+
+	log.Printf("ConversationAgent: Handling message directly with LLM: %s", msg.Content[:min(50, len(msg.Content))])
 
 	// Build context for LLM
 	contextPrompt := a.buildConversationPrompt(conversation)
@@ -263,17 +267,41 @@ func (a *ConversationAgent) updateConversation(ctx context.Context, conversation
 
 // shouldDelegate determines if the request should be delegated to specialist agents
 func (a *ConversationAgent) shouldDelegate(content string) bool {
-	contentLower := strings.ToLower(content)
-
-	// Check for specialized topics
-	specialistKeywords := map[string][]string{
-		"research": {"research", "find information", "look up", "search for", "information about"},
-		"task":     {"create task", "schedule", "remind me", "todo", "to-do", "to do", "task"},
-		"coder":    {"code", "programming", "function", "algorithm", "write a program", "debug"},
-		"analyst":  {"analyze", "data analysis", "statistics", "trends", "patterns", "insights"},
-		"writer":   {"write", "draft", "compose", "summarize", "article", "blog post"},
+	// First check if we have an orchestrator and if specialist agents exist
+	if a.orchestrator == nil {
+		return false
 	}
 
+	// Get all available agents
+	allAgents := a.orchestrator.ListAgents()
+	hasSpecialists := false
+
+	// Check if any specialist agents are available (other than conversation and coordinator)
+	for _, agent := range allAgents {
+		agentType := agent.Type()
+		if agentType != multiagent.AgentTypeConversation && agentType != multiagent.AgentTypeCoordinator {
+			hasSpecialists = true
+			break
+		}
+	}
+
+	// If no specialists are available, don't delegate
+	if !hasSpecialists {
+		return false
+	}
+
+	contentLower := strings.ToLower(content)
+
+	// Check for specialized topics that specifically require delegation
+	specialistKeywords := map[string][]string{
+		"research": {"research", "find information", "look up", "search for", "information about", "investigate", "analyze data"},
+		"task":     {"create task", "schedule", "remind me", "todo", "to-do", "to do", "set reminder", "plan"},
+		"coder":    {"write code", "programming", "function", "algorithm", "write a program", "debug", "script", "software"},
+		"analyst":  {"analyze", "data analysis", "statistics", "trends", "patterns", "insights", "metrics", "performance"},
+		"writer":   {"write article", "draft", "compose", "blog post", "document", "report", "essay"},
+	}
+
+	// Only delegate if there are strong indicators for specialist work
 	for _, keywords := range specialistKeywords {
 		for _, keyword := range keywords {
 			if strings.Contains(contentLower, keyword) {
@@ -282,11 +310,7 @@ func (a *ConversationAgent) shouldDelegate(content string) bool {
 		}
 	}
 
-	// Check for complex requests
-	if len(strings.Split(content, " ")) > 20 {
-		return true
-	}
-
+	// Don't delegate based on length alone - most conversations should be handled directly
 	return false
 }
 

@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -22,6 +23,8 @@ type DefaultOrchestrator struct {
 	stopChan     chan struct{}
 	wg           sync.WaitGroup
 	running      bool
+	userResponseHandlers map[string]func(string) // Map of response key to handler function
+	handlersMutex sync.RWMutex
 }
 
 // OrchestratorConfig holds configuration for creating an orchestrator
@@ -49,6 +52,7 @@ func NewOrchestrator(config OrchestratorConfig) *DefaultOrchestrator {
 		memoryStore:  config.MemoryStore,
 		stopChan:     make(chan struct{}),
 		running:      false,
+		userResponseHandlers: make(map[string]func(string)),
 	}
 }
 
@@ -404,6 +408,38 @@ func (o *DefaultOrchestrator) GetSystemHealth() multiagent.SystemHealth {
 	return health
 }
 
+// RegisterUserResponseHandler registers a handler for user responses
+func (o *DefaultOrchestrator) RegisterUserResponseHandler(responseKey string, handler func(string)) {
+	o.handlersMutex.Lock()
+	defer o.handlersMutex.Unlock()
+	o.userResponseHandlers[responseKey] = handler
+}
+
+// UnregisterUserResponseHandler removes a user response handler
+func (o *DefaultOrchestrator) UnregisterUserResponseHandler(responseKey string) {
+	o.handlersMutex.Lock()
+	defer o.handlersMutex.Unlock()
+	delete(o.userResponseHandlers, responseKey)
+}
+
+// handleUserResponse handles responses meant for users
+func (o *DefaultOrchestrator) handleUserResponse(ctx context.Context, response *multiagent.Message) {
+	// Extract the response key from the recipient
+	if len(response.To) == 0 {
+		return
+	}
+	
+	responseKey := string(response.To[0])
+	
+	o.handlersMutex.RLock()
+	handler, exists := o.userResponseHandlers[responseKey]
+	o.handlersMutex.RUnlock()
+	
+	if exists && handler != nil {
+		handler(response.Content)
+	}
+}
+
 // Internal helper methods
 
 func (o *DefaultOrchestrator) findBestAgent(task multiagent.Task) (multiagent.Agent, error) {
@@ -480,11 +516,17 @@ func (o *DefaultOrchestrator) routeMessageToAgents(ctx context.Context, msg *mul
 				return
 			}
 
-			// If we got a response and it's not the original sender, route it back
-			if response != nil && response.From != m.From {
-				// Route the response back through the orchestrator
-				if err := o.RouteMessage(ctx, response); err != nil {
-					fmt.Printf("Error routing response from agent %s: %v\n", a.ID(), err)
+			// If we got a response, handle it appropriately
+			if response != nil {
+				// Check if the response is meant for a user (starts with "user_response_")
+				if strings.HasPrefix(string(response.To[0]), "user_response_") {
+					// This is a response to a user request - handle it via callback
+					o.handleUserResponse(ctx, response)
+				} else if response.From != m.From {
+					// Route the response back through the orchestrator for agent-to-agent communication
+					if err := o.RouteMessage(ctx, response); err != nil {
+						fmt.Printf("Error routing response from agent %s: %v\n", a.ID(), err)
+					}
 				}
 			}
 		}(agent, msg)
