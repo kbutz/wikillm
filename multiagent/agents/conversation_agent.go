@@ -188,53 +188,85 @@ func (a *ConversationAgent) handleQuery(ctx context.Context, msg *multiagent.Mes
 
 // getConversationID extracts or generates a conversation ID
 func (a *ConversationAgent) getConversationID(msg *multiagent.Message) string {
-	// Check if conversation ID is in the message context
+	// First, check if conversation ID is explicitly provided in the message context
 	if ctxID, ok := msg.Context["conversation_id"].(string); ok {
+		log.Printf("ConversationAgent: Using provided conversation ID: %s", ctxID)
 		return ctxID
+	}
+
+	// Next, try to get the actual user ID from context and create consistent conversation ID
+	if userID, ok := msg.Context["user_id"].(string); ok {
+		// Use a consistent conversation ID based on the actual user ID
+		conversationID := fmt.Sprintf("conv_%s", userID)
+		log.Printf("ConversationAgent: Using user-based conversation ID: %s", conversationID)
+		return conversationID
 	}
 
 	// Check if this is a reply to an existing conversation
 	if msg.ReplyTo != "" {
 		// Try to find the conversation ID from the original message
-		// This is a simplified approach; in a real implementation, you'd look up the original message
 		for id, conv := range a.conversations {
 			for _, m := range conv.Messages {
 				if strings.Contains(m.Content, msg.ReplyTo) {
+					log.Printf("ConversationAgent: Found conversation ID from reply: %s", id)
 					return id
 				}
 			}
 		}
 	}
 
-	// Generate a new conversation ID
-	return fmt.Sprintf("conv_%s_%d", msg.From, time.Now().UnixNano())
+	// Fallback: Generate a new conversation ID based on the sender
+	// But clean up the sender ID to remove response key prefixes
+	senderID := string(msg.From)
+	if strings.HasPrefix(senderID, "user_response_") {
+		// Extract the actual user ID from the response key
+		parts := strings.Split(senderID, "_")
+		if len(parts) >= 3 {
+			// user_response_user_123_456 -> user_123
+			senderID = strings.Join(parts[2:len(parts)-1], "_")
+		}
+	}
+	conversationID := fmt.Sprintf("conv_%s", senderID)
+	log.Printf("ConversationAgent: Generated new conversation ID: %s", conversationID)
+	return conversationID
 }
 
 // getOrCreateConversation retrieves an existing conversation or creates a new one
 func (a *ConversationAgent) getOrCreateConversation(ctx context.Context, conversationID string, msg *multiagent.Message) *multiagent.ConversationContext {
 	// Check if conversation exists in memory
 	if conv, exists := a.conversations[conversationID]; exists {
+		log.Printf("ConversationAgent: Found conversation in memory: %s (has %d messages)", conversationID, len(conv.Messages))
 		return conv
 	}
 
 	// Try to load from persistent storage
 	if a.memoryStore != nil {
 		convKey := fmt.Sprintf("conversation:%s", conversationID)
+		log.Printf("ConversationAgent: Attempting to load conversation from storage: %s", convKey)
 		convInterface, err := a.memoryStore.Get(ctx, convKey)
 		if err == nil {
+			log.Printf("ConversationAgent: Successfully loaded conversation from storage: %s", convKey)
 			// Convert to ConversationContext
 			var conv multiagent.ConversationContext
 			convData, err := json.Marshal(convInterface)
 			if err == nil {
 				if err := json.Unmarshal(convData, &conv); err == nil {
+					log.Printf("ConversationAgent: Restored conversation with %d messages", len(conv.Messages))
 					a.conversations[conversationID] = &conv
 					return &conv
+				} else {
+					log.Printf("ConversationAgent: Failed to unmarshal conversation: %v", err)
 				}
+			} else {
+				log.Printf("ConversationAgent: Failed to marshal conversation: %v", err)
 			}
+		} else {
+			log.Printf("ConversationAgent: Could not load conversation from storage: %v", err)
 		}
 	}
 
 	// Create new conversation
+	log.Printf("ConversationAgent: Creating new conversation: %s", conversationID)
 	conv := &multiagent.ConversationContext{
 		ID:           conversationID,
 		UserID:       string(msg.From),
@@ -261,7 +293,12 @@ func (a *ConversationAgent) getOrCreateConversation(ctx context.Context, convers
 func (a *ConversationAgent) updateConversation(ctx context.Context, conversation *multiagent.ConversationContext) {
 	if a.memoryStore != nil {
 		convKey := fmt.Sprintf("conversation:%s", conversation.ID)
-		a.memoryStore.Store(ctx, convKey, conversation)
+		log.Printf("ConversationAgent: Saving conversation to storage: %s (has %d messages)", convKey, len(conversation.Messages))
+		if err := a.memoryStore.Store(ctx, convKey, conversation); err != nil {
+			log.Printf("ConversationAgent: Failed to save conversation: %v", err)
+		} else {
+			log.Printf("ConversationAgent: Successfully saved conversation: %s", convKey)
+		}
 	}
 }
 

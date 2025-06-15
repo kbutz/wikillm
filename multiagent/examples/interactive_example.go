@@ -350,8 +350,9 @@ func (s *MultiAgentService) Stop(ctx context.Context) error {
 
 // ProcessUserMessage processes a user message and returns a response
 func (s *MultiAgentService) ProcessUserMessage(ctx context.Context, userID string, message string) (string, error) {
-	// Create a conversation ID if not provided
-	conversationID := fmt.Sprintf("conv_%s_%d", userID, time.Now().UnixNano())
+	// Use a consistent conversation ID based on user ID (no timestamp!)
+	conversationID := fmt.Sprintf("conv_%s", userID)
+	log.Printf("Service: Using consistent conversation ID: %s", conversationID)
 
 	// Create a response channel to capture the agent's response
 	responseChannel := make(chan string, 1)
@@ -384,7 +385,7 @@ func (s *MultiAgentService) ProcessUserMessage(ctx context.Context, userID strin
 		Priority:  multiagent.PriorityMedium,
 		Timestamp: time.Now(),
 		Context: map[string]interface{}{
-			"conversation_id": conversationID,
+			"conversation_id": conversationID, // This is now consistent!
 			"source":          "user",
 			"user_id":         userID,
 			"response_key":    responseKey,
