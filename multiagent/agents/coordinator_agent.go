@@ -75,12 +75,25 @@ func (a *CoordinatorAgent) HandleMessage(ctx context.Context, msg *multiagent.Me
 		a.memoryStore.Store(ctx, msgKey, msg)
 	}
 
+	// Check if this is a message that should be ignored to prevent loops
+	if a.shouldIgnoreMessage(msg) {
+		return nil, nil // Return nil to prevent further response loops
+	}
+
 	// Process based on message type
 	switch msg.Type {
 	case multiagent.MessageTypeRequest:
 		return a.handleRequest(ctx, msg)
 	case multiagent.MessageTypeReport:
 		return a.handleReport(ctx, msg)
+	case multiagent.MessageTypeResponse:
+		// Check if this is a specialist response to coordination
+		if _, hasCoordID := msg.Context["coordination_id"]; hasCoordID {
+			log.Printf("CoordinatorAgent: Treating response as report due to coordination context")
+			return a.handleReport(ctx, msg)
+		}
+		// Fall through to default handling
+		fallthrough
 	default:
 		// For other message types, use the base implementation
 		return a.BaseAgent.HandleMessage(ctx, msg)
@@ -97,10 +110,13 @@ func (a *CoordinatorAgent) handleRequest(ctx context.Context, msg *multiagent.Me
 	}
 
 	// Get task details
+	log.Printf("CoordinatorAgent: Retrieving task with ID: %s", taskID)
 	taskInterface, err := a.memoryStore.Get(ctx, taskID)
 	if err != nil {
+		log.Printf("CoordinatorAgent: Failed to retrieve task %s: %v", taskID, err)
 		return nil, fmt.Errorf("failed to retrieve task: %w", err)
 	}
+	log.Printf("CoordinatorAgent: Successfully retrieved task %s", taskID)
 
 	// Convert to Task
 	var task multiagent.Task
@@ -116,6 +132,9 @@ func (a *CoordinatorAgent) handleRequest(ctx context.Context, msg *multiagent.Me
 	// Extract coordination details from task input
 	userMessage, _ := task.Input["user_message"].(string)
 	conversationID, _ := task.Input["conversation_id"].(string)
+	responseKey, _ := task.Input["response_key"].(string)
+		
+	log.Printf("CoordinatorAgent: Extracted response key: %s", responseKey)
 
 	// Extract specialists
 	var specialists []multiagent.AgentType
@@ -145,7 +164,7 @@ func (a *CoordinatorAgent) handleRequest(ctx context.Context, msg *multiagent.Me
 		Responses:      make(map[multiagent.AgentID]string),
 		Status:         "in_progress",
 		StartTime:      time.Now(),
-		RequesterID:    task.Requester,
+		RequesterID:    multiagent.AgentID(responseKey), // Use response key instead of task requester
 	}
 
 	// Store coordination
@@ -207,10 +226,16 @@ func (a *CoordinatorAgent) handleReport(ctx context.Context, msg *multiagent.Mes
 
 	// If all specialists have responded, synthesize final response
 	if allResponded {
+		log.Printf("CoordinatorAgent: All specialists responded, finalizing coordination %s", coordID)
 		if err := a.finalizeCoordination(ctx, coord); err != nil {
 			return nil, fmt.Errorf("failed to finalize coordination: %w", err)
 		}
+		// Don't return an acknowledgment when we've sent the final response to avoid loops
+		return nil, nil
 	}
+
+	// Only return acknowledgment if coordination is still in progress
+	log.Printf("CoordinatorAgent: Coordination %s still in progress, awaiting more responses", coordID)
 
 	// Return acknowledgment
 	return &multiagent.Message{
@@ -273,12 +298,16 @@ func (a *CoordinatorAgent) delegateToSpecialists(ctx context.Context, coord *coo
 
 // finalizeCoordination synthesizes specialist responses and sends final response
 func (a *CoordinatorAgent) finalizeCoordination(ctx context.Context, coord *coordination) error {
+	log.Printf("CoordinatorAgent: Starting finalization for coordination %s", coord.ID)
+	
 	// Mark coordination as completed
 	a.mu.Lock()
 	coord.Status = "completed"
 	now := time.Now()
 	coord.CompletionTime = &now
 	a.mu.Unlock()
+
+	log.Printf("CoordinatorAgent: Building synthesis prompt for %d specialist responses", len(coord.Responses))
 
 	// Build context for LLM
 	var promptBuilder strings.Builder
@@ -293,10 +322,12 @@ func (a *CoordinatorAgent) finalizeCoordination(ctx context.Context, coord *coor
 	promptBuilder.WriteString("Please synthesize these responses into a single, coherent response that addresses the user's request comprehensively. Be concise but thorough, and ensure all relevant information is included.")
 
 	// Query LLM for synthesized response
+	log.Printf("CoordinatorAgent: Querying LLM for synthesis")
 	synthesizedResponse, err := a.llmProvider.Query(ctx, promptBuilder.String())
 	if err != nil {
 		return fmt.Errorf("failed to synthesize response: %w", err)
 	}
+	log.Printf("CoordinatorAgent: LLM synthesis completed, response length: %d", len(synthesizedResponse))
 
 	// Store final response
 	coord.FinalResponse = synthesizedResponse
@@ -307,6 +338,7 @@ func (a *CoordinatorAgent) finalizeCoordination(ctx context.Context, coord *coor
 	}
 
 	// Send final response to requester
+	log.Printf("CoordinatorAgent: Sending final response to requester: %s", coord.RequesterID)
 	finalMessage := &multiagent.Message{
 		ID:        fmt.Sprintf("msg_%s_%d", a.id, time.Now().UnixNano()),
 		From:      a.id,
@@ -319,13 +351,15 @@ func (a *CoordinatorAgent) finalizeCoordination(ctx context.Context, coord *coor
 			"coordination_id": coord.ID,
 			"conversation_id": coord.ConversationID,
 			"task_id":         coord.TaskID,
+			"final_response":  true,
 		},
 	}
 
 	if err := a.orchestrator.RouteMessage(ctx, finalMessage); err != nil {
 		return fmt.Errorf("failed to send final response: %w", err)
 	}
-
+	
+	log.Printf("CoordinatorAgent: Successfully sent final response to %s", coord.RequesterID)
 	return nil
 }
 
@@ -348,6 +382,12 @@ func (a *CoordinatorAgent) updateTask(ctx context.Context, coord *coordination) 
 		return fmt.Errorf("failed to unmarshal task data: %w", err)
 	}
 
+	// Ensure Output map is initialized
+	if task.Output == nil {
+		task.Output = make(map[string]interface{})
+		log.Printf("CoordinatorAgent: Initialized nil Output map for task %s", coord.TaskID)
+	}
+
 	// Update task
 	task.Status = multiagent.TaskStatusCompleted
 	now := time.Now()
@@ -361,6 +401,34 @@ func (a *CoordinatorAgent) updateTask(ctx context.Context, coord *coordination) 
 	}
 
 	return nil
+}
+
+// shouldIgnoreMessage determines if a message should be ignored to prevent loops
+func (a *CoordinatorAgent) shouldIgnoreMessage(msg *multiagent.Message) bool {
+	// Ignore general help responses from specialist agents that aren't part of active coordination
+	if msg.Type == multiagent.MessageTypeResponse {
+		contentLower := strings.ToLower(msg.Content)
+		
+		// Check for general help messages that create loops
+		if strings.Contains(contentLower, "thank you for confirming") ||
+		   strings.Contains(contentLower, "as your") && strings.Contains(contentLower, "manager") ||
+		   strings.Contains(contentLower, "would you like to:") ||
+		   strings.Contains(contentLower, "let me know what's on your mind") {
+			return true
+		}
+		
+		// If this is a response that doesn't have a coordination_id context, it might be a general response
+		if _, hasCoordID := msg.Context["coordination_id"]; !hasCoordID {
+			// Check if it's a generic response by looking for help-offering patterns
+			if strings.Contains(contentLower, "help with") ||
+			   strings.Contains(contentLower, "available") ||
+			   strings.Contains(contentLower, "assistance") {
+				return true
+			}
+		}
+	}
+	
+	return false
 }
 
 // getAgentsByType returns available agents of a specific type

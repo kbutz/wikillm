@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 	"fmt"
+	"log"
 	"strings"
 	"sync"
 	"time"
@@ -12,19 +13,19 @@ import (
 
 // DefaultOrchestrator implements the Orchestrator interface
 type DefaultOrchestrator struct {
-	agents       map[multiagent.AgentID]multiagent.Agent
-	agentsByType map[multiagent.AgentType][]multiagent.Agent
-	tasks        map[string]*multiagent.Task
-	messageQueue chan *multiagent.Message
-	eventQueue   chan *multiagent.Event
-	memoryStore  multiagent.MemoryStore
-	mu           sync.RWMutex
-	startTime    time.Time
-	stopChan     chan struct{}
-	wg           sync.WaitGroup
-	running      bool
+	agents               map[multiagent.AgentID]multiagent.Agent
+	agentsByType         map[multiagent.AgentType][]multiagent.Agent
+	tasks                map[string]*multiagent.Task
+	messageQueue         chan *multiagent.Message
+	eventQueue           chan *multiagent.Event
+	memoryStore          multiagent.MemoryStore
+	mu                   sync.RWMutex
+	startTime            time.Time
+	stopChan             chan struct{}
+	wg                   sync.WaitGroup
+	running              bool
 	userResponseHandlers map[string]func(string) // Map of response key to handler function
-	handlersMutex sync.RWMutex
+	handlersMutex        sync.RWMutex
 }
 
 // OrchestratorConfig holds configuration for creating an orchestrator
@@ -44,14 +45,14 @@ func NewOrchestrator(config OrchestratorConfig) *DefaultOrchestrator {
 	}
 
 	return &DefaultOrchestrator{
-		agents:       make(map[multiagent.AgentID]multiagent.Agent),
-		agentsByType: make(map[multiagent.AgentType][]multiagent.Agent),
-		tasks:        make(map[string]*multiagent.Task),
-		messageQueue: make(chan *multiagent.Message, config.MessageQueueSize),
-		eventQueue:   make(chan *multiagent.Event, config.EventQueueSize),
-		memoryStore:  config.MemoryStore,
-		stopChan:     make(chan struct{}),
-		running:      false,
+		agents:               make(map[multiagent.AgentID]multiagent.Agent),
+		agentsByType:         make(map[multiagent.AgentType][]multiagent.Agent),
+		tasks:                make(map[string]*multiagent.Task),
+		messageQueue:         make(chan *multiagent.Message, config.MessageQueueSize),
+		eventQueue:           make(chan *multiagent.Event, config.EventQueueSize),
+		memoryStore:          config.MemoryStore,
+		stopChan:             make(chan struct{}),
+		running:              false,
 		userResponseHandlers: make(map[string]func(string)),
 	}
 }
@@ -76,6 +77,8 @@ func (o *DefaultOrchestrator) RegisterAgent(agent multiagent.Agent) error {
 		o.agentsByType[agentType] = []multiagent.Agent{}
 	}
 	o.agentsByType[agentType] = append(o.agentsByType[agentType], agent)
+
+	log.Printf("Orchestrator: Registered agent %s (%s) of type %s", agent.Name(), agentID, agentType)
 
 	// Store registration in memory
 	if o.memoryStore != nil {
@@ -215,9 +218,17 @@ func (o *DefaultOrchestrator) AssignTask(ctx context.Context, task multiagent.Ta
 		task.ID = fmt.Sprintf("task_%d", time.Now().UnixNano())
 	}
 
+	log.Printf("Orchestrator: AssignTask called for task %s, assignee: %s", task.ID, task.Assignee)
+
 	// Set initial status
 	task.Status = multiagent.TaskStatusPending
 	task.CreatedAt = time.Now()
+
+	// Ensure Output map is initialized if nil
+	if task.Output == nil {
+		task.Output = make(map[string]interface{})
+		log.Printf("Orchestrator: Initialized nil Output map for task %s", task.ID)
+	}
 
 	var agent multiagent.Agent
 	var err error
@@ -247,26 +258,31 @@ func (o *DefaultOrchestrator) AssignTask(ctx context.Context, task multiagent.Ta
 
 	// Store in memory
 	if o.memoryStore != nil {
-		taskKey := fmt.Sprintf("orchestrator:task:%s", task.ID)
+		taskKey := task.ID // Use task ID directly as key
 		o.memoryStore.Store(ctx, taskKey, task)
 	}
 
 	// Send task to agent
 	taskMsg := &multiagent.Message{
-		ID:       fmt.Sprintf("msg_%d", time.Now().UnixNano()),
-		From:     multiagent.AgentID("coordinator_agent"),
-		To:       []multiagent.AgentID{agent.ID()},
-		Type:     multiagent.MessageTypeCommand,
-		Content:  fmt.Sprintf("Execute task %s: %s", task.ID, task.Description),
-		Context:  map[string]interface{}{"task": task},
-		Priority: task.Priority,
+		ID:        fmt.Sprintf("msg_%d", time.Now().UnixNano()),
+		From:      multiagent.AgentID("orchestrator"),
+		To:        []multiagent.AgentID{agent.ID()},
+		Type:      multiagent.MessageTypeRequest,
+		Content:   fmt.Sprintf("Execute task %s: %s", task.ID, task.Description),
+		Context:   map[string]interface{}{"task_id": task.ID},
+		Priority:  task.Priority,
+		Timestamp: time.Now(),
 	}
 
+	log.Printf("Orchestrator: Sending task message to agent %s", agent.ID())
 	if err := o.RouteMessage(ctx, taskMsg); err != nil {
 		task.Status = multiagent.TaskStatusFailed
 		task.Error = fmt.Sprintf("Failed to send task to agent: %v", err)
+		log.Printf("Orchestrator: Failed to send task to agent %s: %v", agent.ID(), err)
 		return "", err
 	}
+
+	log.Printf("Orchestrator: Successfully assigned task %s to agent %s", task.ID, agent.ID())
 
 	return agent.ID(), nil
 }
@@ -413,6 +429,7 @@ func (o *DefaultOrchestrator) RegisterUserResponseHandler(responseKey string, ha
 	o.handlersMutex.Lock()
 	defer o.handlersMutex.Unlock()
 	o.userResponseHandlers[responseKey] = handler
+	log.Printf("Orchestrator: Registered user response handler for key: %s (total: %d)", responseKey, len(o.userResponseHandlers))
 }
 
 // UnregisterUserResponseHandler removes a user response handler
@@ -420,23 +437,38 @@ func (o *DefaultOrchestrator) UnregisterUserResponseHandler(responseKey string) 
 	o.handlersMutex.Lock()
 	defer o.handlersMutex.Unlock()
 	delete(o.userResponseHandlers, responseKey)
+	log.Printf("Orchestrator: Unregistered user response handler for key: %s (total: %d)", responseKey, len(o.userResponseHandlers))
 }
 
 // handleUserResponse handles responses meant for users
 func (o *DefaultOrchestrator) handleUserResponse(ctx context.Context, response *multiagent.Message) {
 	// Extract the response key from the recipient
 	if len(response.To) == 0 {
+		log.Printf("Orchestrator: No recipients in user response message")
 		return
 	}
-	
+
 	responseKey := string(response.To[0])
-	
+	log.Printf("Orchestrator: Handling user response for key: %s", responseKey)
+
 	o.handlersMutex.RLock()
 	handler, exists := o.userResponseHandlers[responseKey]
+	handlerCount := len(o.userResponseHandlers)
 	o.handlersMutex.RUnlock()
-	
+
 	if exists && handler != nil {
+		log.Printf("Orchestrator: Calling user response handler for %s (found %d total handlers)", responseKey, handlerCount)
 		handler(response.Content)
+		log.Printf("Orchestrator: Successfully called user response handler for %s", responseKey)
+	} else {
+		log.Printf("Orchestrator: No handler found for user response key: %s (have %d total handlers)", responseKey, handlerCount)
+		// Log all available handlers for debugging
+		o.handlersMutex.RLock()
+		log.Printf("Orchestrator: Available handler keys count: %d", len(o.userResponseHandlers))
+		for key := range o.userResponseHandlers {
+			log.Printf("  - %s", key)
+		}
+		o.handlersMutex.RUnlock()
 	}
 }
 
@@ -498,35 +530,72 @@ func (o *DefaultOrchestrator) routeMessageToAgents(ctx context.Context, msg *mul
 	o.mu.RLock()
 	defer o.mu.RUnlock()
 
+	log.Printf("Orchestrator: Routing message %s from %s to %v (type: %s)", msg.ID, msg.From, msg.To, msg.Type)
+
 	// Route to each recipient
 	for _, recipientID := range msg.To {
-		agent, exists := o.agents[recipientID]
-		if !exists {
-			// Log error but continue with other recipients
-			fmt.Printf("Warning: Agent %s not found for message %s\n", recipientID, msg.ID)
+		// Special handling for user response keys
+		if strings.HasPrefix(string(recipientID), "user_response_") {
+			log.Printf("Orchestrator: Routing message %s to user response handler for %s", msg.ID, recipientID)
+			o.handleUserResponse(ctx, msg)
 			continue
 		}
 
+		// Special handling for messages directed to the orchestrator itself
+		if recipientID == "orchestrator" {
+			log.Printf("Orchestrator: Processing message %s directed to orchestrator", msg.ID)
+
+			// Handle orchestrator-directed messages
+			go func(m *multiagent.Message) {
+				response := o.handleOrchestratorMessage(ctx, m)
+				if response != nil {
+					log.Printf("Orchestrator: Routing orchestrator response back")
+					if err := o.RouteMessage(ctx, response); err != nil {
+						log.Printf("Error routing orchestrator response: %v", err)
+					}
+				}
+			}(msg)
+			continue
+		}
+
+		agent, exists := o.agents[recipientID]
+		if !exists {
+			// Log error but continue with other recipients
+			log.Printf("Warning: Agent %s not found for message %s", recipientID, msg.ID)
+			continue
+		}
+
+		log.Printf("Orchestrator: Sending message %s to agent %s (%s)", msg.ID, recipientID, agent.Name())
+
 		// Handle the message directly with the agent
 		go func(a multiagent.Agent, m *multiagent.Message) {
+			log.Printf("Orchestrator: Processing message %s with agent %s", m.ID, a.ID())
 			// Process the message with the agent
 			response, err := a.HandleMessage(ctx, m)
 			if err != nil {
-				fmt.Printf("Error handling message %s with agent %s: %v\n", m.ID, a.ID(), err)
+				log.Printf("Error handling message %s with agent %s: %v", m.ID, a.ID(), err)
 				return
 			}
 
+			log.Printf("Orchestrator: Agent %s processed message %s, response: %v", a.ID(), m.ID, response != nil)
+
 			// If we got a response, handle it appropriately
 			if response != nil {
+				log.Printf("Orchestrator: Handling response from agent %s to %v (type: %s)", a.ID(), response.To, response.Type)
+
 				// Check if the response is meant for a user (starts with "user_response_")
-				if strings.HasPrefix(string(response.To[0]), "user_response_") {
+				if len(response.To) > 0 && strings.HasPrefix(string(response.To[0]), "user_response_") {
 					// This is a response to a user request - handle it via callback
+					log.Printf("Orchestrator: Routing response to user callback")
 					o.handleUserResponse(ctx, response)
-				} else if response.From != m.From {
+				} else if o.shouldRouteResponse(m, response) {
 					// Route the response back through the orchestrator for agent-to-agent communication
+					log.Printf("Orchestrator: Routing response back through orchestrator")
 					if err := o.RouteMessage(ctx, response); err != nil {
-						fmt.Printf("Error routing response from agent %s: %v\n", a.ID(), err)
+						log.Printf("Error routing response from agent %s: %v", a.ID(), err)
 					}
+				} else {
+					log.Printf("Orchestrator: Terminating message chain to prevent loop")
 				}
 			}
 		}(agent, msg)
@@ -616,4 +685,133 @@ func (o *DefaultOrchestrator) healthMonitor(ctx context.Context) {
 			return
 		}
 	}
+}
+
+// shouldRouteResponse determines if a response should be routed to prevent infinite loops
+func (o *DefaultOrchestrator) shouldRouteResponse(originalMsg *multiagent.Message, response *multiagent.Message) bool {
+	// Don't route if it's the same agent responding to itself
+	if response.From == originalMsg.From {
+		return false
+	}
+
+	// Always route messages intended for users (user_response_ prefix)
+	if len(response.To) > 0 && strings.HasPrefix(string(response.To[0]), "user_response_") {
+		log.Printf("Orchestrator: Allowing user-directed response")
+		return true
+	}
+
+	// Always route final responses from coordination
+	if finalResp, ok := response.Context["final_response"].(bool); ok && finalResp {
+		log.Printf("Orchestrator: Allowing final coordination response")
+		return true
+	}
+
+	// Don't route simple acknowledgment messages between agents
+	if response.Type == multiagent.MessageTypeResponse {
+		// Check for coordination acknowledgments that are just status updates
+		if _, hasCoordID := response.Context["coordination_id"]; hasCoordID {
+			if ack, hasAck := response.Context["acknowledged"].(bool); hasAck && ack {
+				log.Printf("Orchestrator: Skipping routing of coordination acknowledgment")
+				return false
+			}
+
+			// Allow all coordination responses regardless of content - coordinator will handle them
+			log.Printf("Orchestrator: Allowing coordination response")
+			return true
+		}
+
+		// Check for simple acknowledgment content patterns (only for non-coordination messages)
+		contentLower := strings.ToLower(response.Content)
+		if (strings.Contains(contentLower, "response received") && len(response.Content) < 50) ||
+			(strings.Contains(contentLower, "processed") && len(response.Content) < 50) {
+			log.Printf("Orchestrator: Skipping routing of simple acknowledgment")
+			return false
+		}
+
+		// Don't route generic help messages that create loops (only for non-coordination messages)
+		if strings.Contains(contentLower, "thank you for confirming") ||
+			(strings.Contains(contentLower, "as your") && strings.Contains(contentLower, "manager") && len(response.Content) < 200) ||
+			(strings.Contains(contentLower, "would you like to:") && len(response.Content) < 300) {
+			log.Printf("Orchestrator: Skipping routing of generic help message")
+			return false
+		}
+	}
+
+	// Check for reply chains that are getting too long
+	// Only block if we're seeing the same two agents repeatedly exchanging messages
+	if response.ReplyTo != "" && originalMsg.ReplyTo != "" {
+		// Allow coordinator final responses even in reply chains
+		if response.From == "coordinator_agent" && strings.HasPrefix(string(response.To[0]), "user_response_") {
+			log.Printf("Orchestrator: Allowing coordinator final response despite reply chain")
+			return true
+		}
+
+		// Only block if it's the same agents talking back and forth
+		if response.From == originalMsg.To[0] && response.To[0] == originalMsg.From {
+			log.Printf("Orchestrator: Terminating deep reply chain between same agents")
+			return false
+		}
+	}
+
+	// Route if it's a legitimate new message from a different agent
+	return response.From != originalMsg.From
+}
+
+// handleOrchestratorMessage handles messages directed to the orchestrator itself
+func (o *DefaultOrchestrator) handleOrchestratorMessage(ctx context.Context, msg *multiagent.Message) *multiagent.Message {
+	log.Printf("Orchestrator: Handling message %s of type %s", msg.ID, msg.Type)
+
+	switch msg.Type {
+	case multiagent.MessageTypeResponse:
+		// Handle coordination status updates
+		if coordinationID, ok := msg.Context["coordination_id"].(string); ok {
+			log.Printf("Orchestrator: Received coordination status update for %s", coordinationID)
+
+			// Store coordination status in memory
+			if o.memoryStore != nil {
+				statusKey := fmt.Sprintf("orchestrator:coordination:%s", coordinationID)
+				o.memoryStore.Store(ctx, statusKey, map[string]interface{}{
+					"coordination_id": coordinationID,
+					"status":          msg.Content,
+					"timestamp":       msg.Timestamp,
+					"from_agent":      msg.From,
+				})
+			}
+
+			// Acknowledge the coordination message
+			return &multiagent.Message{
+				ID:      fmt.Sprintf("msg_orchestrator_%d", time.Now().UnixNano()),
+				From:    multiagent.AgentID("orchestrator"),
+				To:      []multiagent.AgentID{msg.From},
+				Type:    multiagent.MessageTypeResponse,
+				Content: fmt.Sprintf("Coordination %s status acknowledged", coordinationID),
+				Context: map[string]interface{}{
+					"coordination_id": coordinationID,
+					"acknowledged":    true,
+				},
+				Priority:  multiagent.PriorityLow,
+				ReplyTo:   msg.ID,
+				Timestamp: time.Now(),
+			}
+		}
+
+	case multiagent.MessageTypeRequest:
+		// Handle direct requests to orchestrator
+		log.Printf("Orchestrator: Processing direct request: %s", msg.Content)
+
+		// Respond with orchestrator status or capabilities
+		return &multiagent.Message{
+			ID:        fmt.Sprintf("msg_orchestrator_%d", time.Now().UnixNano()),
+			From:      multiagent.AgentID("orchestrator"),
+			To:        []multiagent.AgentID{msg.From},
+			Type:      multiagent.MessageTypeResponse,
+			Content:   fmt.Sprintf("Orchestrator received request: %s", msg.Content),
+			Priority:  multiagent.PriorityMedium,
+			ReplyTo:   msg.ID,
+			Timestamp: time.Now(),
+		}
+	}
+
+	// No response needed for other message types
+	return nil
 }

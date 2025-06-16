@@ -406,22 +406,27 @@ func (a *ConversationAgent) delegateToSpecialists(ctx context.Context, msg *mult
 
 	// Create a task for the coordinator to handle
 	if a.orchestrator != nil {
-		task := multiagent.Task{
-			ID:          fmt.Sprintf("task_%s_%d", a.id, time.Now().UnixNano()),
-			Type:        "user_request",
-			Description: fmt.Sprintf("Handle user request: %s", msg.Content),
-			Priority:    msg.Priority,
-			Requester:   a.id,
-			Assignee:    multiagent.AgentID("coordinator_agent"), // Explicitly assign to coordinator_agent
-			Status:      multiagent.TaskStatusPending,
-			CreatedAt:   time.Now(),
-			Input: map[string]interface{}{
-				"user_message":    msg.Content,
-				"conversation_id": conversation.ID,
-				"specialists":     specialists,
-			},
-			Output: make(map[string]interface{}),
-		}
+	// Extract the response key from the original message sender
+	responseKey := string(msg.From)
+	log.Printf("ConversationAgent: Extracted response key: %s", responseKey)
+	
+	task := multiagent.Task{
+	ID:          fmt.Sprintf("task_%s_%d", a.id, time.Now().UnixNano()),
+	Type:        "user_request",
+	Description: fmt.Sprintf("Handle user request: %s", msg.Content),
+	Priority:    msg.Priority,
+	Requester:   a.id,
+	Assignee:    multiagent.AgentID("coordinator_agent"), // Explicitly assign to coordinator_agent
+	Status:      multiagent.TaskStatusPending,
+	CreatedAt:   time.Now(),
+	Input: map[string]interface{}{
+	"user_message":    msg.Content,
+	"conversation_id": conversation.ID,
+	"specialists":     specialists,
+	"response_key":    responseKey, // Add the response key for final response routing
+	},
+	Output: make(map[string]interface{}), // Ensure Output is properly initialized
+	}
 
 		// Assign task to coordinator
 		_, err := a.orchestrator.AssignTask(ctx, task)

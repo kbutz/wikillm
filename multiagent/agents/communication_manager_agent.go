@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"sort"
 	"strings"
 	"sync"
@@ -15,46 +16,46 @@ import (
 // CommunicationManagerAgent specializes in managing communications, messages, and relationships
 type CommunicationManagerAgent struct {
 	*BaseAgent
-	contacts      map[string]*Contact
-	messages      map[string]*CommunicationMessage
-	templates     map[string]*MessageTemplate
-	commMutex     sync.RWMutex
+	contacts  map[string]*Contact
+	messages  map[string]*CommunicationMessage
+	templates map[string]*MessageTemplate
+	commMutex sync.RWMutex
 }
 
 // Contact represents a person or entity in the communication system
 type Contact struct {
-	ID              string                 `json:"id"`
-	Name            string                 `json:"name"`
-	Email           string                 `json:"email"`
-	Phone           string                 `json:"phone"`
-	Organization    string                 `json:"organization"`
-	Title           string                 `json:"title"`
-	Relationship    RelationshipType       `json:"relationship"`
-	Priority        ContactPriority        `json:"priority"`
-	PreferredComm   CommunicationMethod    `json:"preferred_communication"`
-	TimeZone        string                 `json:"time_zone"`
-	Tags            []string               `json:"tags"`
-	Notes           string                 `json:"notes"`
-	SocialProfiles  map[string]string      `json:"social_profiles"`
-	LastContact     *time.Time             `json:"last_contact,omitempty"`
-	ContactFreq     ContactFrequency       `json:"contact_frequency"`
-	Status          ContactStatus          `json:"status"`
-	CreatedAt       time.Time              `json:"created_at"`
-	UpdatedAt       time.Time              `json:"updated_at"`
-	Metadata        map[string]interface{} `json:"metadata"`
+	ID             string                 `json:"id"`
+	Name           string                 `json:"name"`
+	Email          string                 `json:"email"`
+	Phone          string                 `json:"phone"`
+	Organization   string                 `json:"organization"`
+	Title          string                 `json:"title"`
+	Relationship   RelationshipType       `json:"relationship"`
+	Priority       ContactPriority        `json:"priority"`
+	PreferredComm  CommunicationMethod    `json:"preferred_communication"`
+	TimeZone       string                 `json:"time_zone"`
+	Tags           []string               `json:"tags"`
+	Notes          string                 `json:"notes"`
+	SocialProfiles map[string]string      `json:"social_profiles"`
+	LastContact    *time.Time             `json:"last_contact,omitempty"`
+	ContactFreq    ContactFrequency       `json:"contact_frequency"`
+	Status         ContactStatus          `json:"status"`
+	CreatedAt      time.Time              `json:"created_at"`
+	UpdatedAt      time.Time              `json:"updated_at"`
+	Metadata       map[string]interface{} `json:"metadata"`
 }
 
 // RelationshipType defines the type of relationship
 type RelationshipType string
 
 const (
-	RelationshipTypeFamily      RelationshipType = "family"
-	RelationshipTypeFriend      RelationshipType = "friend"
-	RelationshipTypeColleague   RelationshipType = "colleague"
-	RelationshipTypeClient      RelationshipType = "client"
-	RelationshipTypeVendor      RelationshipType = "vendor"
-	RelationshipTypeMentor      RelationshipType = "mentor"
-	RelationshipTypeNetworking  RelationshipType = "networking"
+	RelationshipTypeFamily       RelationshipType = "family"
+	RelationshipTypeFriend       RelationshipType = "friend"
+	RelationshipTypeColleague    RelationshipType = "colleague"
+	RelationshipTypeClient       RelationshipType = "client"
+	RelationshipTypeVendor       RelationshipType = "vendor"
+	RelationshipTypeMentor       RelationshipType = "mentor"
+	RelationshipTypeNetworking   RelationshipType = "networking"
 	RelationshipTypeProfessional RelationshipType = "professional"
 )
 
@@ -62,10 +63,10 @@ const (
 type ContactPriority string
 
 const (
-	ContactPriorityVIP      ContactPriority = "vip"
-	ContactPriorityHigh     ContactPriority = "high"
-	ContactPriorityMedium   ContactPriority = "medium"
-	ContactPriorityLow      ContactPriority = "low"
+	ContactPriorityVIP    ContactPriority = "vip"
+	ContactPriorityHigh   ContactPriority = "high"
+	ContactPriorityMedium ContactPriority = "medium"
+	ContactPriorityLow    ContactPriority = "low"
 )
 
 // CommunicationMethod defines preferred communication methods
@@ -85,12 +86,12 @@ const (
 type ContactFrequency string
 
 const (
-	ContactFrequencyDaily   ContactFrequency = "daily"
-	ContactFrequencyWeekly  ContactFrequency = "weekly"
-	ContactFrequencyMonthly ContactFrequency = "monthly"
+	ContactFrequencyDaily     ContactFrequency = "daily"
+	ContactFrequencyWeekly    ContactFrequency = "weekly"
+	ContactFrequencyMonthly   ContactFrequency = "monthly"
 	ContactFrequencyQuarterly ContactFrequency = "quarterly"
-	ContactFrequencyYearly  ContactFrequency = "yearly"
-	ContactFrequencyAsNeeded ContactFrequency = "as_needed"
+	ContactFrequencyYearly    ContactFrequency = "yearly"
+	ContactFrequencyAsNeeded  ContactFrequency = "as_needed"
 )
 
 // ContactStatus represents the current status of a contact
@@ -105,26 +106,26 @@ const (
 
 // CommunicationMessage represents a message or communication
 type CommunicationMessage struct {
-	ID              string                 `json:"id"`
-	ContactID       string                 `json:"contact_id"`
-	Subject         string                 `json:"subject"`
-	Content         string                 `json:"content"`
-	Method          CommunicationMethod    `json:"method"`
-	Direction       MessageDirection       `json:"direction"`
-	Status          MessageStatus          `json:"status"`
-	Priority        multiagent.Priority    `json:"priority"`
-	ScheduledFor    *time.Time             `json:"scheduled_for,omitempty"`
-	SentAt          *time.Time             `json:"sent_at,omitempty"`
-	ReceivedAt      *time.Time             `json:"received_at,omitempty"`
-	ReadAt          *time.Time             `json:"read_at,omitempty"`
-	TemplateID      string                 `json:"template_id,omitempty"`
-	Tags            []string               `json:"tags"`
-	Attachments     []string               `json:"attachments"`
-	ThreadID        string                 `json:"thread_id,omitempty"`
-	ParentID        string                 `json:"parent_id,omitempty"`
-	CreatedAt       time.Time              `json:"created_at"`
-	UpdatedAt       time.Time              `json:"updated_at"`
-	Metadata        map[string]interface{} `json:"metadata"`
+	ID           string                 `json:"id"`
+	ContactID    string                 `json:"contact_id"`
+	Subject      string                 `json:"subject"`
+	Content      string                 `json:"content"`
+	Method       CommunicationMethod    `json:"method"`
+	Direction    MessageDirection       `json:"direction"`
+	Status       MessageStatus          `json:"status"`
+	Priority     multiagent.Priority    `json:"priority"`
+	ScheduledFor *time.Time             `json:"scheduled_for,omitempty"`
+	SentAt       *time.Time             `json:"sent_at,omitempty"`
+	ReceivedAt   *time.Time             `json:"received_at,omitempty"`
+	ReadAt       *time.Time             `json:"read_at,omitempty"`
+	TemplateID   string                 `json:"template_id,omitempty"`
+	Tags         []string               `json:"tags"`
+	Attachments  []string               `json:"attachments"`
+	ThreadID     string                 `json:"thread_id,omitempty"`
+	ParentID     string                 `json:"parent_id,omitempty"`
+	CreatedAt    time.Time              `json:"created_at"`
+	UpdatedAt    time.Time              `json:"updated_at"`
+	Metadata     map[string]interface{} `json:"metadata"`
 }
 
 // MessageDirection defines the direction of communication
@@ -150,18 +151,18 @@ const (
 
 // MessageTemplate represents a reusable message template
 type MessageTemplate struct {
-	ID          string                 `json:"id"`
-	Name        string                 `json:"name"`
-	Category    TemplateCategory       `json:"category"`
-	Subject     string                 `json:"subject"`
-	Content     string                 `json:"content"`
-	Variables   []TemplateVariable     `json:"variables"`
-	Method      CommunicationMethod    `json:"method"`
-	Tags        []string               `json:"tags"`
-	UsageCount  int                    `json:"usage_count"`
-	CreatedAt   time.Time              `json:"created_at"`
-	UpdatedAt   time.Time              `json:"updated_at"`
-	Metadata    map[string]interface{} `json:"metadata"`
+	ID         string                 `json:"id"`
+	Name       string                 `json:"name"`
+	Category   TemplateCategory       `json:"category"`
+	Subject    string                 `json:"subject"`
+	Content    string                 `json:"content"`
+	Variables  []TemplateVariable     `json:"variables"`
+	Method     CommunicationMethod    `json:"method"`
+	Tags       []string               `json:"tags"`
+	UsageCount int                    `json:"usage_count"`
+	CreatedAt  time.Time              `json:"created_at"`
+	UpdatedAt  time.Time              `json:"updated_at"`
+	Metadata   map[string]interface{} `json:"metadata"`
 }
 
 // TemplateCategory defines categories of message templates
@@ -189,15 +190,15 @@ type TemplateVariable struct {
 
 // CommunicationStats represents communication statistics
 type CommunicationStats struct {
-	TotalContacts      int                              `json:"total_contacts"`
-	ActiveContacts     int                              `json:"active_contacts"`
-	MessagesSent       int                              `json:"messages_sent"`
-	MessagesReceived   int                              `json:"messages_received"`
-	ResponseRate       float64                          `json:"response_rate"`
-	AvgResponseTime    time.Duration                    `json:"avg_response_time"`
-	ContactsByPriority map[ContactPriority]int          `json:"contacts_by_priority"`
-	MessagesByMethod   map[CommunicationMethod]int      `json:"messages_by_method"`
-	LastUpdated        time.Time                        `json:"last_updated"`
+	TotalContacts      int                         `json:"total_contacts"`
+	ActiveContacts     int                         `json:"active_contacts"`
+	MessagesSent       int                         `json:"messages_sent"`
+	MessagesReceived   int                         `json:"messages_received"`
+	ResponseRate       float64                     `json:"response_rate"`
+	AvgResponseTime    time.Duration               `json:"avg_response_time"`
+	ContactsByPriority map[ContactPriority]int     `json:"contacts_by_priority"`
+	MessagesByMethod   map[CommunicationMethod]int `json:"messages_by_method"`
+	LastUpdated        time.Time                   `json:"last_updated"`
 }
 
 // NewCommunicationManagerAgent creates a new communication manager agent
@@ -246,6 +247,11 @@ func (a *CommunicationManagerAgent) HandleMessage(ctx context.Context, msg *mult
 	if a.memoryStore != nil {
 		msgKey := fmt.Sprintf("communication_manager:%s:%s", a.id, msg.ID)
 		a.memoryStore.Store(ctx, msgKey, msg)
+	}
+
+	// Check if this is a simple acknowledgment or coordination response that should be ignored
+	if a.shouldIgnoreMessage(msg) {
+		return nil, nil // Return nil to prevent further response loops
 	}
 
 	content := strings.ToLower(msg.Content)
@@ -301,16 +307,16 @@ Make reasonable assumptions for missing information.`, msg.Content)
 	}
 
 	var contactData struct {
-		Name                  string   `json:"name"`
-		Email                 string   `json:"email"`
-		Phone                 string   `json:"phone"`
-		Organization          string   `json:"organization"`
-		Title                 string   `json:"title"`
-		Relationship          string   `json:"relationship"`
-		Priority              string   `json:"priority"`
+		Name                   string   `json:"name"`
+		Email                  string   `json:"email"`
+		Phone                  string   `json:"phone"`
+		Organization           string   `json:"organization"`
+		Title                  string   `json:"title"`
+		Relationship           string   `json:"relationship"`
+		Priority               string   `json:"priority"`
 		PreferredCommunication string   `json:"preferred_communication"`
-		Tags                  []string `json:"tags"`
-		Notes                 string   `json:"notes"`
+		Tags                   []string `json:"tags"`
+		Notes                  string   `json:"notes"`
 	}
 
 	if err := json.Unmarshal([]byte(response), &contactData); err != nil {
@@ -319,23 +325,23 @@ Make reasonable assumptions for missing information.`, msg.Content)
 
 	// Create contact
 	contact := &Contact{
-		ID:            fmt.Sprintf("contact_%d", time.Now().UnixNano()),
-		Name:          contactData.Name,
-		Email:         contactData.Email,
-		Phone:         contactData.Phone,
-		Organization:  contactData.Organization,
-		Title:         contactData.Title,
-		Relationship:  RelationshipType(contactData.Relationship),
-		Priority:      a.parseContactPriority(contactData.Priority),
-		PreferredComm: CommunicationMethod(contactData.PreferredCommunication),
-		Tags:          contactData.Tags,
-		Notes:         contactData.Notes,
-		Status:        ContactStatusActive,
-		ContactFreq:   ContactFrequencyAsNeeded,
+		ID:             fmt.Sprintf("contact_%d", time.Now().UnixNano()),
+		Name:           contactData.Name,
+		Email:          contactData.Email,
+		Phone:          contactData.Phone,
+		Organization:   contactData.Organization,
+		Title:          contactData.Title,
+		Relationship:   RelationshipType(contactData.Relationship),
+		Priority:       a.parseContactPriority(contactData.Priority),
+		PreferredComm:  CommunicationMethod(contactData.PreferredCommunication),
+		Tags:           contactData.Tags,
+		Notes:          contactData.Notes,
+		Status:         ContactStatusActive,
+		ContactFreq:    ContactFrequencyAsNeeded,
 		SocialProfiles: make(map[string]string),
-		CreatedAt:     time.Now(),
-		UpdatedAt:     time.Now(),
-		Metadata:      make(map[string]interface{}),
+		CreatedAt:      time.Now(),
+		UpdatedAt:      time.Now(),
+		Metadata:       make(map[string]interface{}),
 	}
 
 	// Store contact
@@ -553,27 +559,27 @@ func (a *CommunicationManagerAgent) handleListContacts(ctx context.Context, msg 
 
 		priority := a.getPriorityEmoji(contact.Priority)
 		relationship := a.getRelationshipEmoji(contact.Relationship)
-		
+
 		contactsBuilder.WriteString(fmt.Sprintf("%d. %s %s **%s**", i+1, priority, relationship, contact.Name))
-		
+
 		if contact.Organization != "" {
 			contactsBuilder.WriteString(fmt.Sprintf(" - %s", contact.Organization))
 		}
-		
+
 		if contact.Title != "" {
 			contactsBuilder.WriteString(fmt.Sprintf(" (%s)", contact.Title))
 		}
-		
+
 		contactsBuilder.WriteString("\n")
-		
+
 		if contact.Email != "" {
 			contactsBuilder.WriteString(fmt.Sprintf("   📧 %s\n", contact.Email))
 		}
-		
+
 		if contact.LastContact != nil {
 			contactsBuilder.WriteString(fmt.Sprintf("   📅 Last contact: %s\n", contact.LastContact.Format("2006-01-02")))
 		}
-		
+
 		contactsBuilder.WriteString("\n")
 	}
 
@@ -628,7 +634,7 @@ func (a *CommunicationManagerAgent) handleScheduleMessage(ctx context.Context, m
 
 func (a *CommunicationManagerAgent) handleCommunicationStats(ctx context.Context, msg *multiagent.Message) (*multiagent.Message, error) {
 	stats := a.calculateCommunicationStats()
-	
+
 	statsContent := fmt.Sprintf("📊 **Communication Statistics**\n\n"+
 		"👥 **Contacts:** %d total, %d active\n"+
 		"✉️ **Messages:** %d sent, %d received\n"+
@@ -676,10 +682,20 @@ func (a *CommunicationManagerAgent) handleRelationshipManagement(ctx context.Con
 func (a *CommunicationManagerAgent) handleGeneralQuery(ctx context.Context, msg *multiagent.Message) (*multiagent.Message, error) {
 	// Build context with communication information
 	contextPrompt := a.buildCommunicationContext(ctx, msg)
-	
+
 	response, err := a.llmProvider.Query(ctx, contextPrompt)
 	if err != nil {
 		return nil, fmt.Errorf("LLM query failed: %w", err)
+	}
+
+	// Preserve coordination context if present
+	responseContext := make(map[string]interface{})
+	if coordID, ok := msg.Context["coordination_id"]; ok {
+		responseContext["coordination_id"] = coordID
+		log.Printf("CommunicationManagerAgent: Preserving coordination context: %v", coordID)
+	}
+	if convID, ok := msg.Context["conversation_id"]; ok {
+		responseContext["conversation_id"] = convID
 	}
 
 	return &multiagent.Message{
@@ -690,6 +706,7 @@ func (a *CommunicationManagerAgent) handleGeneralQuery(ctx context.Context, msg 
 		Content:   response,
 		ReplyTo:   msg.ID,
 		Timestamp: time.Now(),
+		Context:   responseContext,
 	}, nil
 }
 
@@ -723,10 +740,10 @@ func (a *CommunicationManagerAgent) parsePriority(priority string) multiagent.Pr
 
 func (a *CommunicationManagerAgent) findContactByName(name string) *Contact {
 	nameLower := strings.ToLower(name)
-	
+
 	a.commMutex.RLock()
 	defer a.commMutex.RUnlock()
-	
+
 	for _, contact := range a.contacts {
 		if strings.Contains(strings.ToLower(contact.Name), nameLower) {
 			return contact
@@ -854,19 +871,47 @@ func (a *CommunicationManagerAgent) calculateCommunicationStats() CommunicationS
 	return stats
 }
 
+// shouldIgnoreMessage determines if a message should be ignored to prevent loops
+func (a *CommunicationManagerAgent) shouldIgnoreMessage(msg *multiagent.Message) bool {
+	// Ignore messages from coordinator agents that are simple acknowledgments
+	if strings.Contains(string(msg.From), "coordinator") && msg.Type == multiagent.MessageTypeResponse {
+		contentLower := strings.ToLower(msg.Content)
+
+		// Check for common acknowledgment patterns
+		if strings.Contains(contentLower, "response received") ||
+			strings.Contains(contentLower, "processed") ||
+			strings.Contains(contentLower, "coordination") && strings.Contains(contentLower, "started") ||
+			strings.Contains(contentLower, "acknowledged") {
+			return true
+		}
+	}
+
+	// Ignore messages that are replies to our own messages (to prevent self-conversation loops)
+	if msg.ReplyTo != "" && strings.Contains(msg.ReplyTo, string(a.id)) {
+		contentLower := strings.ToLower(msg.Content)
+		if strings.Contains(contentLower, "thank you") ||
+			strings.Contains(contentLower, "received") ||
+			strings.Contains(contentLower, "acknowledged") {
+			return true
+		}
+	}
+
+	return false
+}
+
 func (a *CommunicationManagerAgent) buildCommunicationContext(ctx context.Context, msg *multiagent.Message) string {
 	var contextBuilder strings.Builder
-	
+
 	contextBuilder.WriteString(fmt.Sprintf("You are %s, a communication and relationship management specialist.\n\n", a.name))
 	contextBuilder.WriteString("You help users manage their contacts, compose messages, maintain relationships, and optimize their communication strategies.\n\n")
-	
+
 	// Add contact summary
 	a.commMutex.RLock()
 	if len(a.contacts) > 0 {
 		contextBuilder.WriteString("Contact Summary:\n")
 		stats := a.calculateCommunicationStats()
 		contextBuilder.WriteString(fmt.Sprintf("- Total contacts: %d (%d active)\n", stats.TotalContacts, stats.ActiveContacts))
-		contextBuilder.WriteString(fmt.Sprintf("- VIP: %d, High: %d, Medium: %d, Low: %d\n", 
+		contextBuilder.WriteString(fmt.Sprintf("- VIP: %d, High: %d, Medium: %d, Low: %d\n",
 			stats.ContactsByPriority[ContactPriorityVIP],
 			stats.ContactsByPriority[ContactPriorityHigh],
 			stats.ContactsByPriority[ContactPriorityMedium],
@@ -874,9 +919,9 @@ func (a *CommunicationManagerAgent) buildCommunicationContext(ctx context.Contex
 		contextBuilder.WriteString("\n")
 	}
 	a.commMutex.RUnlock()
-	
+
 	contextBuilder.WriteString(fmt.Sprintf("User request: %s\n\n", msg.Content))
 	contextBuilder.WriteString("Please provide helpful communication assistance, relationship management advice, or execute the requested action.")
-	
+
 	return contextBuilder.String()
 }

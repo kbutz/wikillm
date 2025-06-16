@@ -381,23 +381,26 @@ func (s *MultiAgentService) ProcessUserMessage(ctx context.Context, userID strin
 	conversationID := fmt.Sprintf("conv_%s", userID)
 	log.Printf("Service: Using consistent conversation ID: %s", conversationID)
 
-	// Create a response channel to capture the agent's response
-	responseChannel := make(chan string, 1)
+	// Create a buffered response channel to capture the agent's response
+	responseChannel := make(chan string, 2) // Buffered to prevent blocking
 	responseKey := fmt.Sprintf("user_response_%s_%d", userID, time.Now().UnixNano())
 	
 	// Create a handler function that sends to our response channel
 	handler := func(response string) {
+		log.Printf("Service: Handler called for key %s with response: %s", responseKey, response)
 		select {
 		case responseChannel <- response:
+			log.Printf("Service: Successfully sent response to channel for key: %s", responseKey)
 		default:
-			// Channel full, ignore
+			log.Printf("Service: Response channel full for key: %s, ignoring", responseKey)
 		}
 	}
 	
 	// Register the handler with the orchestrator
 	if orch, ok := s.orchestrator.(*DefaultOrchestrator); ok {
 		orch.RegisterUserResponseHandler(responseKey, handler)
-		defer orch.UnregisterUserResponseHandler(responseKey)
+		log.Printf("Service: Registered response handler for key: %s", responseKey)
+		// Note: Handler will be unregistered after we get a response or timeout
 	} else {
 		return "", fmt.Errorf("orchestrator does not support user response handlers")
 	}
@@ -424,15 +427,43 @@ func (s *MultiAgentService) ProcessUserMessage(ctx context.Context, userID strin
 		return "", fmt.Errorf("failed to route message: %w", err)
 	}
 
-	// Wait for response with timeout
+	// Wait for response with extended timeout for LLM synthesis
+	var result string
+	var err error
+	
+	// Create a cleanup function that will only run once
+	var cleanupOnce sync.Once
+	cleanupHandler := func() {
+		cleanupOnce.Do(func() {
+			if orch, ok := s.orchestrator.(*DefaultOrchestrator); ok {
+				orch.UnregisterUserResponseHandler(responseKey)
+				log.Printf("Service: Unregistered response handler for key: %s", responseKey)
+			}
+		})
+	}
+	
+	// Ensure cleanup happens when function returns
+	defer func() {
+		// Give a small delay to ensure any in-flight messages are processed
+		go func() {
+			time.Sleep(200 * time.Millisecond)
+			cleanupHandler()
+		}()
+	}()
+	
 	select {
 	case response := <-responseChannel:
-		return response, nil
-	case <-time.After(60 * time.Second): // Increased timeout for complex agent processing
-		return "I'm still processing your request. The specialist agents are working on it. Please check back in a moment.", nil
+		result = response
+		log.Printf("Service: Received response for key %s: %s", responseKey, response)
+	case <-time.After(300 * time.Second): // Extended timeout for LLM synthesis (5 minutes)
+		result = "I'm still processing your request. The specialist agents are working on it, but it's taking longer than expected. Please try again."
+		log.Printf("Service: Timeout waiting for response to key: %s", responseKey)
 	case <-ctx.Done():
-		return "", ctx.Err()
+		err = ctx.Err()
+		log.Printf("Service: Context cancelled for key: %s", responseKey)
 	}
+	
+	return result, err
 }
 
 // GetAgent returns an agent by ID
