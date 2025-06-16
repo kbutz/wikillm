@@ -1,6 +1,16 @@
 # WikiLLM MultiAgent System
 
-A comprehensive multi-agent system for orchestrating specialized AI agents with persistent memory and coordinated workflows.
+Mostly unusable, not worth hacking on top of, though.
+
+This was an example repo to try to wire up multi agents in a "Conversation of Agents" style to run a "personal assistant" locally. 
+The end goal was really to have an OpenAI style system that can run locally, primarily to keep data private and to avoid the costs of using a hosted LLM service at scale.
+Ultimately, I can't get it to work well enough to be useful, so I'm leaving it here as an example of how I tried to do it.
+
+Some findings:
+* I think the architecture is more complicated than it needs to be, which leads to more debugging time and increased debugging difficulty
+* I think the "specialist agents" are too rigid and not flexible enough to handle the variety of tasks I want to throw at them. 
+* I'm still learning here, but think the specialist agents in this form limit the LLM more than enable it, giving it reduced Agency to fulfill user requests.
+* It *almost* works, but I'm going to try again with something simpler.
 
 ## Overview
 
@@ -20,7 +30,12 @@ The system is built around the following core components:
 
 - **Conversation Agent**: Handles natural language interactions with users
 - **Coordinator Agent**: Orchestrates the work of specialist agents
-- **Specialist Agents**: Focused on specific domains (research, coding, analysis, etc.)
+- **Specialist Agents**:
+  - **Project Manager Agent**: Project planning and lifecycle management
+  - **Task Manager Agent**: Personal task management using GTD methodology
+  - **Research Assistant Agent**: Information gathering and source evaluation
+  - **Scheduler Agent**: Calendar management and appointment scheduling
+  - **Communication Manager Agent**: Contact management and communication tracking
 
 ### Memory
 
@@ -160,10 +175,10 @@ svc.AddTool(searchTool)
 ### Basic Example
 See the `examples/multiagent_example.go` file for a basic example of how to use the system.
 
-### LMStudio Integration
-The `examples/lmstudio_example.go` file demonstrates how to connect the multiagent service to a local LMStudio server.
+### Interactive Example with LMStudio Integration
+The `examples/interactive_example.go` file demonstrates how to connect the multiagent service to a local LMStudio server and provides an interactive command-line interface for testing the system.
 
-To run the LMStudio example:
+To run the interactive example:
 
 1. Download and install [LMStudio](https://lmstudio.ai/)
 2. Start LMStudio and load a model
@@ -172,10 +187,22 @@ To run the LMStudio example:
 
 ```bash
 cd multiagent/examples
-go run lmstudio_example.go
+go run interactive_example.go
 ```
 
 The example connects to LMStudio's API endpoint and uses it as the LLM provider for the multiagent service.
+
+### Personal Assistant Demo
+The `examples/personal_assistant_demo.go` file demonstrates a comprehensive personal assistant system built on top of the multiagent framework. It includes specialized agents for project management, task management, research, scheduling, and communication.
+
+To run the personal assistant demo:
+
+```bash
+cd multiagent/examples
+go run personal_assistant_demo.go
+```
+
+For more detailed information about the personal assistant functionality, see the [PERSONAL_ASSISTANT.md](PERSONAL_ASSISTANT.md) file.
 
 ## Features
 
@@ -184,7 +211,9 @@ The example connects to LMStudio's API endpoint and uses it as the LLM provider 
 - **Coordinated Responses**: Multiple agents can collaborate on a single user request
 - **Extensible Architecture**: Easy to add new agent types and tools
 - **Conversation Management**: Tracking and management of ongoing conversations
+- **Personal Assistant Capabilities**: Specialized agents for project management, task management, scheduling, research, and communication
+- **LMStudio Integration**: Support for local LLM processing using LMStudio
 
-## License
+## Additional Documentation
 
-[Your License Here]
+For more detailed information about the personal assistant functionality, see the [PERSONAL_ASSISTANT.md](PERSONAL_ASSISTANT.md) file.

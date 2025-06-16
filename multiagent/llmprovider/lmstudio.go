@@ -124,7 +124,7 @@ func (p *LMStudioProvider) Query(ctx context.Context, prompt string) (string, er
 		log.Printf("Sending request to LMStudio at %s", p.ServerURL+"/chat/completions")
 	}
 	client := &http.Client{
-		Timeout: 300 * time.Second, // Increased timeout for longer generations
+		Timeout: 600 * time.Second, // Increased timeout to 10 minutes for longer generations
 	}
 	resp, err := client.Do(req)
 	if err != nil {

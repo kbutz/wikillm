@@ -71,7 +71,7 @@ func main() {
 
 	// Test a simple query to ensure LMStudio is working
 	log.Println("⏳ First request may take longer if model is loading...")
-	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 600*time.Second)
 	testResponse, err := llmProvider.Query(ctx, "Say hello in one word.")
 	cancel()
 

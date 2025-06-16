@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -153,17 +154,29 @@ func (s *MultiAgentService) ProcessUserMessage(ctx context.Context, userID strin
 		handlerState.mutex.Lock()
 		defer handlerState.mutex.Unlock()
 
-		if handlerState.called {
-			log.Printf("Service: [HANDLER] Already called for key %s, ignoring duplicate", responseKey)
-			return
-		}
-
-		handlerState.called = true
+		// Always store the response, even if it's an acknowledgment
 		handlerState.response = response
 		handlerState.timestamp = time.Now()
 
 		log.Printf("Service: [HANDLER] ✅ Called for key %s at %v", responseKey, handlerState.timestamp)
 		log.Printf("Service: [HANDLER] Response length: %d", len(response))
+
+		// Check if this is an acknowledgment message from the conversation agent
+		if strings.Contains(response, "I'm working on your request and consulting with specialists") {
+			log.Printf("Service: [HANDLER] 🔄 Received acknowledgment message, waiting for final response")
+			// Don't mark as called yet and don't send to channel
+			// This ensures we'll still process the final response from the coordinator
+			return
+		}
+
+		// If we already processed a response (that wasn't an acknowledgment), ignore duplicates
+		if handlerState.called {
+			log.Printf("Service: [HANDLER] Already called for key %s, ignoring duplicate", responseKey)
+			return
+		}
+
+		// Mark as called for non-acknowledgment responses
+		handlerState.called = true
 
 		// Send to channel with timeout
 		select {
@@ -218,11 +231,11 @@ func (s *MultiAgentService) ProcessUserMessage(ctx context.Context, userID strin
 
 	log.Printf("Service: [ROUTE] ✅ Message routed successfully")
 
-	// Wait with VERY aggressive monitoring
+	// Wait with enhanced monitoring and orphan recovery
 	startTime := time.Now()
 
-	// Status check every 5 seconds
-	statusTicker := time.NewTicker(5 * time.Second)
+	// Status check every 2 seconds for more responsive recovery
+	statusTicker := time.NewTicker(2 * time.Second)
 	defer statusTicker.Stop()
 
 	// Main response wait loop
@@ -231,6 +244,10 @@ func (s *MultiAgentService) ProcessUserMessage(ctx context.Context, userID strin
 		case response := <-responseChannel:
 			elapsed := time.Since(startTime)
 			log.Printf("Service: [SUCCESS] ✅ Response received via channel after %v", elapsed)
+
+			// Wait a short time before unregistering to ensure any in-flight responses are processed
+			// This helps prevent race conditions where the handler is unregistered too early
+			time.Sleep(500 * time.Millisecond)
 
 			// NOW we can cleanup since we got the response
 			if orch, ok := s.orchestrator.(*orchestrator.DefaultOrchestrator); ok {
@@ -242,7 +259,18 @@ func (s *MultiAgentService) ProcessUserMessage(ctx context.Context, userID strin
 		case <-statusTicker.C:
 			elapsed := time.Since(startTime)
 
-			// Check handler state first
+			// FIRST: Check for orphaned responses immediately
+			if orch, ok := s.orchestrator.(*orchestrator.DefaultOrchestrator); ok {
+				if orphanResponse, found := orch.GetOrphanedResponse(ctx, responseKey); found {
+					log.Printf("Service: [RECOVERY] ✅ Orphaned response recovered after %v", elapsed)
+					// Wait a short time before unregistering
+					time.Sleep(500 * time.Millisecond)
+					orch.UnregisterUserResponseHandler(responseKey)
+					return orphanResponse, nil
+				}
+			}
+
+			// Check handler state second
 			handlerState.mutex.RLock()
 			called := handlerState.called
 			response := handlerState.response
@@ -251,6 +279,8 @@ func (s *MultiAgentService) ProcessUserMessage(ctx context.Context, userID strin
 			// If handler was called but response wasn't delivered via channel
 			if called && len(response) > 0 {
 				log.Printf("Service: [RECOVERY] ✅ Found response in handler state after %v", elapsed)
+				// Wait a short time before unregistering
+				time.Sleep(500 * time.Millisecond)
 				if orch, ok := s.orchestrator.(*orchestrator.DefaultOrchestrator); ok {
 					orch.UnregisterUserResponseHandler(responseKey)
 				}
@@ -270,55 +300,62 @@ func (s *MultiAgentService) ProcessUserMessage(ctx context.Context, userID strin
 				totalHandlers := orch.GetUserResponseHandlerCount()
 
 				if !handlerExists {
-					log.Printf("Service: [ERROR] ❌ Handler disappeared! Re-registering...")
+					log.Printf("Service: [ERROR] ❌ Handler disappeared after %v! Re-registering...", elapsed)
 					orch.RegisterUserResponseHandler(responseKey, handler)
 					handlerState.mutex.Lock()
 					handlerState.registered = true
 					handlerState.mutex.Unlock()
 				} else {
-					log.Printf("Service: [STATUS] ⏳ Waiting %v, handler exists, total: %d", elapsed, totalHandlers)
-				}
-			}
-
-			// Check for very long waits
-			if elapsed > 20*time.Minute {
-				log.Printf("Service: [TIMEOUT] ⏰ Very long wait (%v), checking for orphaned responses", elapsed)
-
-				if orch, ok := s.orchestrator.(*orchestrator.DefaultOrchestrator); ok {
-					if orphanResponse, found := orch.GetOrphanedResponse(ctx, responseKey); found {
-						log.Printf("Service: [SUCCESS] ✅ Orphaned response recovered after %v", elapsed)
-						orch.UnregisterUserResponseHandler(responseKey)
-						return orphanResponse, nil
+					// Only log every 10 seconds to reduce noise
+					if int(elapsed.Seconds())%10 == 0 {
+						log.Printf("Service: [STATUS] ⏳ Waiting %v, handler exists, total: %d", elapsed, totalHandlers)
 					}
 				}
 			}
 
-			// Ultimate timeout
-			if elapsed > 30*time.Minute {
-				log.Printf("Service: [TIMEOUT] ❌ Ultimate timeout reached after %v", elapsed)
+			// Ultimate timeout - be more aggressive about recovery
+			if elapsed > 10*time.Minute {
+				log.Printf("Service: [TIMEOUT] ❌ Timeout reached after %v", elapsed)
 
-				// Final check for any response
+				// Final comprehensive check
 				handlerState.mutex.RLock()
 				finalResponse := handlerState.response
 				handlerState.mutex.RUnlock()
 
 				if len(finalResponse) > 0 {
-					log.Printf("Service: [SUCCESS] ✅ Last-chance response found")
+					log.Printf("Service: [SUCCESS] ✅ Final response found in handler state")
+					// Wait a short time before unregistering
+					time.Sleep(500 * time.Millisecond)
 					if orch, ok := s.orchestrator.(*orchestrator.DefaultOrchestrator); ok {
 						orch.UnregisterUserResponseHandler(responseKey)
 					}
 					return finalResponse, nil
 				}
 
-				// Give up
+				// Final orphan check
 				if orch, ok := s.orchestrator.(*orchestrator.DefaultOrchestrator); ok {
-					orch.UnregisterUserResponseHandler(responseKey)
+					if orphanResponse, found := orch.GetOrphanedResponse(ctx, responseKey); found {
+						log.Printf("Service: [SUCCESS] ✅ Final orphaned response recovered")
+						// Wait a short time before unregistering
+						time.Sleep(500 * time.Millisecond)
+						orch.UnregisterUserResponseHandler(responseKey)
+						return orphanResponse, nil
+					}
 				}
+
+				// Give up - but keep the handler registered for a bit longer
+				// This helps with race conditions where the response arrives just after the timeout
+				log.Printf("Service: [TIMEOUT] ⚠️ Keeping handler registered for potential late responses")
+
+				// Return timeout message but don't unregister the handler yet
+				// The handler will be garbage collected eventually
 				return fmt.Sprintf("Request timed out after %v. The system may still be processing your request. Please try again.", elapsed.Round(time.Second)), nil
 			}
 
 		case <-ctx.Done():
 			log.Printf("Service: [CANCELLED] Context cancelled")
+			// Wait a short time before unregistering
+			time.Sleep(500 * time.Millisecond)
 			if orch, ok := s.orchestrator.(*orchestrator.DefaultOrchestrator); ok {
 				orch.UnregisterUserResponseHandler(responseKey)
 			}

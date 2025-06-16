@@ -105,7 +105,7 @@ func (o *DefaultOrchestrator) UnregisterAgent(agentID multiagent.AgentID) error 
 	}
 
 	// Stop the agent
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 600*time.Second)
 	defer cancel()
 
 	if err := agent.Stop(ctx); err != nil {
@@ -428,12 +428,12 @@ func (o *DefaultOrchestrator) GetSystemHealth() multiagent.SystemHealth {
 func (o *DefaultOrchestrator) RegisterUserResponseHandler(responseKey string, handler func(string)) {
 	o.handlersMutex.Lock()
 	defer o.handlersMutex.Unlock()
-	
+
 	if existing, exists := o.userResponseHandlers[responseKey]; exists {
 		log.Printf("Orchestrator: [REGISTER] ⚠️ Replacing existing handler for key: %s", responseKey)
 		_ = existing
 	}
-	
+
 	o.userResponseHandlers[responseKey] = handler
 	log.Printf("Orchestrator: [REGISTER] ✅ Handler registered for key: %s (total: %d)", 
 		responseKey, len(o.userResponseHandlers))
@@ -443,7 +443,7 @@ func (o *DefaultOrchestrator) RegisterUserResponseHandler(responseKey string, ha
 func (o *DefaultOrchestrator) UnregisterUserResponseHandler(responseKey string) {
 	o.handlersMutex.Lock()
 	defer o.handlersMutex.Unlock()
-	
+
 	if _, exists := o.userResponseHandlers[responseKey]; exists {
 		delete(o.userResponseHandlers, responseKey)
 		log.Printf("Orchestrator: [UNREGISTER] ✅ Handler unregistered for key: %s (total: %d)", 
@@ -458,7 +458,7 @@ func (o *DefaultOrchestrator) GetOrphanedResponse(ctx context.Context, responseK
 	if o.memoryStore == nil {
 		return "", false
 	}
-	
+
 	orphanKey := fmt.Sprintf("orchestrator:orphaned_response:%s", responseKey)
 	if value, err := o.memoryStore.Get(ctx, orphanKey); err == nil {
 		if orphanData, ok := value.(map[string]interface{}); ok {
@@ -470,7 +470,7 @@ func (o *DefaultOrchestrator) GetOrphanedResponse(ctx context.Context, responseK
 			}
 		}
 	}
-	
+
 	return "", false
 }
 
@@ -485,7 +485,7 @@ func (o *DefaultOrchestrator) GetUserResponseHandlerCount() int {
 func (o *DefaultOrchestrator) GetUserResponseHandlerKeys() []string {
 	o.handlersMutex.RLock()
 	defer o.handlersMutex.RUnlock()
-	
+
 	keys := make([]string, 0, len(o.userResponseHandlers))
 	for key := range o.userResponseHandlers {
 		keys = append(keys, key)
@@ -499,29 +499,29 @@ func (o *DefaultOrchestrator) handleUserResponse(ctx context.Context, response *
 		log.Printf("Orchestrator: [USER_RESPONSE] ❌ No recipients in message")
 		return
 	}
-	
+
 	responseKey := string(response.To[0])
 	log.Printf("Orchestrator: [USER_RESPONSE] Processing response for key: %s", responseKey)
 	log.Printf("Orchestrator: [USER_RESPONSE] Response content length: %d", len(response.Content))
-	
+
 	// Get handler with detailed logging
 	o.handlersMutex.RLock()
 	handler, exists := o.userResponseHandlers[responseKey]
 	totalHandlers := len(o.userResponseHandlers)
-	
+
 	// Log all available handlers for debugging
 	availableKeys := make([]string, 0, len(o.userResponseHandlers))
 	for key := range o.userResponseHandlers {
 		availableKeys = append(availableKeys, key)
 	}
 	o.handlersMutex.RUnlock()
-	
+
 	log.Printf("Orchestrator: [USER_RESPONSE] Handler exists: %v, total handlers: %d", exists, totalHandlers)
 	log.Printf("Orchestrator: [USER_RESPONSE] Available handler keys: %v", availableKeys)
-	
+
 	if exists && handler != nil {
 		log.Printf("Orchestrator: [USER_RESPONSE] ✅ Executing handler for key: %s", responseKey)
-		
+
 		// Execute handler with panic recovery
 		go func() {
 			defer func() {
@@ -529,18 +529,18 @@ func (o *DefaultOrchestrator) handleUserResponse(ctx context.Context, response *
 					log.Printf("Orchestrator: [USER_RESPONSE] ❌ Handler panic for %s: %v", responseKey, r)
 				}
 			}()
-			
+
 			handler(response.Content)
 			log.Printf("Orchestrator: [USER_RESPONSE] ✅ Handler executed successfully for %s", responseKey)
 		}()
-		
+
 		return
 	}
-	
+
 	// Handler not found - this should not happen with our new approach
 	log.Printf("Orchestrator: [USER_RESPONSE] ❌ CRITICAL: No handler found for %s", responseKey)
 	log.Printf("Orchestrator: [USER_RESPONSE] This indicates a cleanup bug - handler was unregistered prematurely")
-	
+
 	// Store as orphaned response for recovery
 	if o.memoryStore != nil {
 		orphanKey := fmt.Sprintf("orchestrator:orphaned_response:%s", responseKey)
@@ -550,12 +550,25 @@ func (o *DefaultOrchestrator) handleUserResponse(ctx context.Context, response *
 			"timestamp":    time.Now(),
 			"from_agent":   response.From,
 		}
-		
-		if err := o.memoryStore.StoreWithTTL(ctx, orphanKey, orphanData, 2*time.Hour); err != nil {
+
+		// Store with a longer TTL to ensure it's available for recovery
+		if err := o.memoryStore.StoreWithTTL(ctx, orphanKey, orphanData, 24*time.Hour); err != nil {
 			log.Printf("Orchestrator: [USER_RESPONSE] ❌ Failed to store orphaned response: %v", err)
 		} else {
-			log.Printf("Orchestrator: [USER_RESPONSE] 💾 Stored orphaned response with 2-hour TTL")
+			log.Printf("Orchestrator: [USER_RESPONSE] 💾 Stored orphaned response with 24-hour TTL")
 		}
+
+		// Try to re-register a handler for this response key
+		// This is a fallback mechanism to handle race conditions where the handler was unregistered prematurely
+		log.Printf("Orchestrator: [USER_RESPONSE] 🔄 Attempting to re-register a temporary handler for %s", responseKey)
+		o.handlersMutex.Lock()
+		o.userResponseHandlers[responseKey] = func(content string) {
+			log.Printf("Orchestrator: [USER_RESPONSE] ⚠️ Late-registered handler called for %s", responseKey)
+			// This is a no-op handler since the response is already stored as an orphan
+			// The service will retrieve it via GetOrphanedResponse
+		}
+		o.handlersMutex.Unlock()
+		log.Printf("Orchestrator: [USER_RESPONSE] ✅ Temporary handler registered for %s", responseKey)
 	}
 }
 
@@ -790,6 +803,12 @@ func (o *DefaultOrchestrator) shouldRouteResponse(originalMsg *multiagent.Messag
 	// Always route final responses from coordination
 	if finalResp, ok := response.Context["final_response"].(bool); ok && finalResp {
 		log.Printf("Orchestrator: Allowing final coordination response")
+		return true
+	}
+
+	// Always route responses from coordinator agent to user response handlers
+	if response.From == "coordinator_agent" && len(response.To) > 0 && strings.HasPrefix(string(response.To[0]), "user_response_") {
+		log.Printf("Orchestrator: Allowing coordinator response to user")
 		return true
 	}
 

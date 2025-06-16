@@ -133,7 +133,7 @@ func (a *CoordinatorAgent) handleRequest(ctx context.Context, msg *multiagent.Me
 	userMessage, _ := task.Input["user_message"].(string)
 	conversationID, _ := task.Input["conversation_id"].(string)
 	responseKey, _ := task.Input["response_key"].(string)
-		
+
 	log.Printf("CoordinatorAgent: Extracted response key: %s", responseKey)
 
 	// Extract specialists
@@ -213,40 +213,59 @@ func (a *CoordinatorAgent) handleReport(ctx context.Context, msg *multiagent.Mes
 	// Store specialist response
 	coord.Responses[msg.From] = msg.Content
 
-	// Check if all specialists have responded
-	allResponded := true
-	for _, specialistID := range coord.SpecialistIDs {
-		if _, responded := coord.Responses[specialistID]; !responded {
-			allResponded = false
+	// Check if we have received any responses
+	log.Printf("CoordinatorAgent: Checking responses for coordination %s", coordID)
+	log.Printf("CoordinatorAgent: Expected specialists: %v", coord.SpecialistIDs)
+	log.Printf("CoordinatorAgent: Received responses from: %v", getMapKeys(coord.Responses))
+
+	// If we have at least one response and no more specialists are expected to respond,
+	// or if we've been waiting for a while, consider the coordination complete
+	responseCount := len(coord.Responses)
+	expectedCount := len(coord.SpecialistIDs)
+	waitTime := time.Since(coord.StartTime)
+
+	// Consider coordination complete if:
+	// 1. We have at least one response AND
+	// 2. Either:
+	//    a. We have all expected responses, or
+	//    b. We've been waiting for more than 30 seconds, or
+	//    c. We've received a response from the orchestrator (which indicates routing issues)
+	orchestratorResponded := false
+	for responder := range coord.Responses {
+		if responder == "orchestrator" {
+			orchestratorResponded = true
+			log.Printf("CoordinatorAgent: Received response from orchestrator, will finalize coordination")
 			break
 		}
 	}
 
-	a.mu.Unlock()
+	allResponded := responseCount > 0 && (responseCount >= expectedCount || waitTime > 30*time.Second || orchestratorResponded)
 
-	// If all specialists have responded, synthesize final response
-	if allResponded {
-		log.Printf("CoordinatorAgent: All specialists responded, finalizing coordination %s", coordID)
-		if err := a.finalizeCoordination(ctx, coord); err != nil {
-			return nil, fmt.Errorf("failed to finalize coordination: %w", err)
-		}
-		// Don't return an acknowledgment when we've sent the final response to avoid loops
-		return nil, nil
+	if responseCount < expectedCount && waitTime > 30*time.Second {
+		log.Printf("CoordinatorAgent: Proceeding with %d/%d responses after waiting %v", 
+			responseCount, expectedCount, waitTime)
 	}
 
-	// Only return acknowledgment if coordination is still in progress
+	a.mu.Unlock()
+
+ // If all specialists have responded, finalize coordination
+ if allResponded {
+         log.Printf("CoordinatorAgent: All specialists responded for coordination %s", coordID)
+
+         // Finalize coordination synchronously to ensure handler is still registered
+         if err := a.finalizeCoordination(ctx, coord); err != nil {
+                 log.Printf("CoordinatorAgent: Failed to finalize coordination %s: %v", coordID, err)
+                 return nil, fmt.Errorf("failed to finalize coordination: %w", err)
+         }
+
+         // Return nil to indicate completion without further agent-to-agent responses
+         return nil, nil
+ }
+
 	log.Printf("CoordinatorAgent: Coordination %s still in progress, awaiting more responses", coordID)
 
-	// Return acknowledgment
-	return &multiagent.Message{
-		ID:        fmt.Sprintf("msg_%s_%d", a.id, time.Now().UnixNano()),
-		From:      a.id,
-		To:        []multiagent.AgentID{msg.From},
-		Type:      multiagent.MessageTypeResponse,
-		Content:   "Response received and processed",
-		ReplyTo:   msg.ID,
-		Timestamp: time.Now(),
-	}, nil
+	// Return nil for in-progress coordination to avoid unnecessary agent-to-agent chatter
+	return nil, nil
 }
 
 // delegateToSpecialists sends requests to specialist agents
@@ -299,7 +318,7 @@ func (a *CoordinatorAgent) delegateToSpecialists(ctx context.Context, coord *coo
 // finalizeCoordination synthesizes specialist responses and sends final response
 func (a *CoordinatorAgent) finalizeCoordination(ctx context.Context, coord *coordination) error {
 	log.Printf("CoordinatorAgent: Starting finalization for coordination %s", coord.ID)
-	
+
 	// Mark coordination as completed
 	a.mu.Lock()
 	coord.Status = "completed"
@@ -358,7 +377,7 @@ func (a *CoordinatorAgent) finalizeCoordination(ctx context.Context, coord *coor
 	if err := a.orchestrator.RouteMessage(ctx, finalMessage); err != nil {
 		return fmt.Errorf("failed to send final response: %w", err)
 	}
-	
+
 	log.Printf("CoordinatorAgent: Successfully sent final response to %s", coord.RequesterID)
 	return nil
 }
@@ -408,7 +427,7 @@ func (a *CoordinatorAgent) shouldIgnoreMessage(msg *multiagent.Message) bool {
 	// Ignore general help responses from specialist agents that aren't part of active coordination
 	if msg.Type == multiagent.MessageTypeResponse {
 		contentLower := strings.ToLower(msg.Content)
-		
+
 		// Check for general help messages that create loops
 		if strings.Contains(contentLower, "thank you for confirming") ||
 		   strings.Contains(contentLower, "as your") && strings.Contains(contentLower, "manager") ||
@@ -416,7 +435,7 @@ func (a *CoordinatorAgent) shouldIgnoreMessage(msg *multiagent.Message) bool {
 		   strings.Contains(contentLower, "let me know what's on your mind") {
 			return true
 		}
-		
+
 		// If this is a response that doesn't have a coordination_id context, it might be a general response
 		if _, hasCoordID := msg.Context["coordination_id"]; !hasCoordID {
 			// Check if it's a generic response by looking for help-offering patterns
@@ -427,8 +446,17 @@ func (a *CoordinatorAgent) shouldIgnoreMessage(msg *multiagent.Message) bool {
 			}
 		}
 	}
-	
+
 	return false
+}
+
+// Helper function to get map keys as a slice
+func getMapKeys(m map[multiagent.AgentID]string) []multiagent.AgentID {
+	keys := make([]multiagent.AgentID, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	return keys
 }
 
 // getAgentsByType returns available agents of a specific type

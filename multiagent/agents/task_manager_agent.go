@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"sort"
 	"strings"
 	"sync"
@@ -443,22 +444,22 @@ func (a *TaskManagerAgent) handleListTasks(ctx context.Context, msg *multiagent.
 
 		status := a.getStatusEmoji(task.Status)
 		priority := a.getPriorityEmoji(task.Priority)
-		
+
 		responseBuilder.WriteString(fmt.Sprintf("%d. %s %s **%s** (%s)\n", i+1, status, priority, task.Title, task.Category))
-		
+
 		if task.DueDate != nil {
 			dueText := a.formatDueDate(*task.DueDate)
 			responseBuilder.WriteString(fmt.Sprintf("   📅 Due: %s\n", dueText))
 		}
-		
+
 		if task.Progress > 0 {
 			responseBuilder.WriteString(fmt.Sprintf("   📊 Progress: %.0f%%\n", task.Progress))
 		}
-		
+
 		if task.Energy != EnergyLevelMedium {
 			responseBuilder.WriteString(fmt.Sprintf("   ⚡ Energy: %s\n", task.Energy))
 		}
-		
+
 		responseBuilder.WriteString("\n")
 	}
 
@@ -476,10 +477,10 @@ func (a *TaskManagerAgent) handleListTasks(ctx context.Context, msg *multiagent.
 // handleCompleteTask marks a task as completed
 func (a *TaskManagerAgent) handleCompleteTask(ctx context.Context, msg *multiagent.Message) (*multiagent.Message, error) {
 	taskID := a.extractTaskID(msg.Content)
-	
+
 	a.taskMutex.Lock()
 	defer a.taskMutex.Unlock()
-	
+
 	task, exists := a.tasks[taskID]
 	if !exists {
 		// Try to find by title
@@ -496,20 +497,20 @@ func (a *TaskManagerAgent) handleCompleteTask(ctx context.Context, msg *multiage
 			}, nil
 		}
 	}
-	
+
 	// Mark as completed
 	task.Status = PersonalTaskStatusCompleted
 	task.Progress = 100.0
 	now := time.Now()
 	task.CompletedAt = &now
 	task.UpdatedAt = now
-	
+
 	// Save to memory
 	if a.memoryStore != nil {
 		taskKey := fmt.Sprintf("personal_task:%s", task.ID)
 		a.memoryStore.Store(ctx, taskKey, task)
 	}
-	
+
 	// Handle recurring tasks
 	if task.Recurring != nil {
 		newTask := a.createRecurringTask(task)
@@ -521,7 +522,7 @@ func (a *TaskManagerAgent) handleCompleteTask(ctx context.Context, msg *multiage
 			}
 		}
 	}
-	
+
 	return &multiagent.Message{
 		ID:        fmt.Sprintf("msg_%s_%d", a.id, time.Now().UnixNano()),
 		From:      a.id,
@@ -565,8 +566,39 @@ Provide response in JSON format:
 		Recurring   bool   `json:"recurring"`
 	}
 
+	// Try to parse the JSON response
 	if err := json.Unmarshal([]byte(response), &reminderData); err != nil {
-		return nil, fmt.Errorf("failed to parse reminder JSON: %w", err)
+		log.Printf("TaskManagerAgent: Warning: Failed to parse reminder JSON: %v", err)
+		log.Printf("TaskManagerAgent: LLM response: %s", response)
+
+		// Check if response contains both JSON-like content and non-JSON content
+		if strings.Contains(response, "{") && strings.Contains(response, "}") {
+			// Try to extract JSON from the response
+			startIdx := strings.Index(response, "{")
+			endIdx := strings.LastIndex(response, "}") + 1
+
+			if startIdx >= 0 && endIdx > startIdx {
+				jsonStr := response[startIdx:endIdx]
+				// Try to parse the extracted JSON
+				if err := json.Unmarshal([]byte(jsonStr), &reminderData); err == nil {
+					// Successfully extracted and parsed JSON
+					log.Printf("TaskManagerAgent: Successfully extracted JSON from LLM response")
+				} else {
+					log.Printf("TaskManagerAgent: Failed to parse extracted JSON: %v", err)
+					// Fall back to the lenient approach
+					return a.handleCreateReminderFallback(ctx, msg, response)
+				}
+			} else {
+				// Fall back to the lenient approach
+				return a.handleCreateReminderFallback(ctx, msg, response)
+			}
+		} else if strings.Contains(response, "<") {
+			// Response contains HTML/XML tags but no valid JSON
+			// Try to extract information using a more lenient approach
+			return a.handleCreateReminderFallback(ctx, msg, response)
+		} else {
+			return nil, fmt.Errorf("failed to parse reminder JSON: %w", err)
+		}
 	}
 
 	// Parse trigger time
@@ -677,7 +709,7 @@ func (a *TaskManagerAgent) getPriorityEmoji(priority multiagent.Priority) string
 func (a *TaskManagerAgent) formatDueDate(dueDate time.Time) string {
 	now := time.Now()
 	diff := dueDate.Sub(now)
-	
+
 	if diff < 0 {
 		return fmt.Sprintf("%s (⚠️ Overdue)", dueDate.Format("2006-01-02"))
 	} else if diff < 24*time.Hour {
@@ -701,7 +733,7 @@ func (a *TaskManagerAgent) extractTaskID(content string) string {
 
 func (a *TaskManagerAgent) findTaskByTitle(content string) *PersonalTask {
 	contentLower := strings.ToLower(content)
-	
+
 	for _, task := range a.tasks {
 		if strings.Contains(contentLower, strings.ToLower(task.Title)) {
 			return task
@@ -843,20 +875,20 @@ func (a *TaskManagerAgent) reminderChecker(ctx context.Context) {
 
 func (a *TaskManagerAgent) checkReminders(ctx context.Context) {
 	now := time.Now()
-	
+
 	a.taskMutex.Lock()
 	defer a.taskMutex.Unlock()
-	
+
 	for _, reminder := range a.reminders {
 		if reminder.Status == ReminderStatusPending && reminder.TriggerAt.Before(now) {
 			reminder.Status = ReminderStatusTriggered
-			
+
 			// Send reminder message (in a real system, this would notify the user)
 			// For now, we'll just log it or store it as a system message
 			if a.memoryStore != nil {
 				reminderKey := fmt.Sprintf("reminder:%s", reminder.ID)
 				a.memoryStore.Store(ctx, reminderKey, reminder)
-				
+
 				// Store triggered reminder as a system message
 				systemMsgKey := fmt.Sprintf("system_reminder:%d", time.Now().UnixNano())
 				a.memoryStore.Store(ctx, systemMsgKey, map[string]interface{}{
@@ -958,7 +990,7 @@ func (a *TaskManagerAgent) handleProductivityStats(ctx context.Context, msg *mul
 func (a *TaskManagerAgent) handleGeneralQuery(ctx context.Context, msg *multiagent.Message) (*multiagent.Message, error) {
 	// Build context with task information
 	contextPrompt := a.buildTaskContext(ctx, msg)
-	
+
 	response, err := a.llmProvider.Query(ctx, contextPrompt)
 	if err != nil {
 		return nil, fmt.Errorf("LLM query failed: %w", err)
@@ -977,10 +1009,10 @@ func (a *TaskManagerAgent) handleGeneralQuery(ctx context.Context, msg *multiage
 
 func (a *TaskManagerAgent) buildTaskContext(ctx context.Context, msg *multiagent.Message) string {
 	var contextBuilder strings.Builder
-	
+
 	contextBuilder.WriteString(fmt.Sprintf("You are %s, a personal task management specialist.\n\n", a.name))
 	contextBuilder.WriteString("You help users manage their personal tasks, reminders, and productivity using GTD (Getting Things Done) methodology.\n\n")
-	
+
 	// Add current task summary
 	a.taskMutex.RLock()
 	if len(a.tasks) > 0 {
@@ -995,9 +1027,99 @@ func (a *TaskManagerAgent) buildTaskContext(ctx context.Context, msg *multiagent
 		contextBuilder.WriteString("\n")
 	}
 	a.taskMutex.RUnlock()
-	
+
 	contextBuilder.WriteString(fmt.Sprintf("User request: %s\n\n", msg.Content))
 	contextBuilder.WriteString("Please provide helpful task management advice, suggestions, or execute the requested action.")
-	
+
 	return contextBuilder.String()
+}
+
+// handleCreateReminderFallback is a fallback method when JSON parsing fails
+func (a *TaskManagerAgent) handleCreateReminderFallback(ctx context.Context, msg *multiagent.Message, llmResponse string) (*multiagent.Message, error) {
+	log.Printf("TaskManagerAgent: Using fallback reminder creation method")
+
+	// Extract information directly from the original message
+	content := msg.Content
+
+	// Try to extract a title
+	title := "Reminder"
+	if strings.Contains(content, "remind me to") {
+		parts := strings.Split(content, "remind me to")
+		if len(parts) > 1 {
+			titleParts := strings.Split(parts[1], ".")
+			title = strings.TrimSpace(titleParts[0])
+		}
+	}
+
+	// Try to extract time
+	triggerAt := time.Now().Add(24 * time.Hour) // Default to tomorrow
+	timeKeywords := []string{"at", "on", "tomorrow", "today"}
+
+	for _, keyword := range timeKeywords {
+		if strings.Contains(content, keyword) {
+			parts := strings.Split(content, keyword)
+			if len(parts) > 1 {
+				timeStr := strings.Split(parts[1], "?")[0]
+				timeStr = strings.Split(timeStr, ".")[0]
+				timeStr = strings.TrimSpace(timeStr)
+
+				// Try to parse common time formats
+				if strings.Contains(timeStr, "AM") || strings.Contains(timeStr, "PM") {
+					if t, err := time.Parse("3:04 PM", timeStr); err == nil {
+						now := time.Now()
+						triggerAt = time.Date(now.Year(), now.Month(), now.Day(), t.Hour(), t.Minute(), 0, 0, now.Location())
+					}
+				} else if strings.Contains(timeStr, ":") {
+					if t, err := time.Parse("15:04", timeStr); err == nil {
+						now := time.Now()
+						triggerAt = time.Date(now.Year(), now.Month(), now.Day(), t.Hour(), t.Minute(), 0, 0, now.Location())
+					}
+				}
+
+				// Check for tomorrow
+				if strings.Contains(content, "tomorrow") {
+					triggerAt = triggerAt.Add(24 * time.Hour)
+				}
+			}
+		}
+	}
+
+	// Create reminder
+	reminder := &Reminder{
+		ID:        fmt.Sprintf("reminder_%d", time.Now().UnixNano()),
+		Title:     title,
+		Message:   content,
+		TriggerAt: triggerAt,
+		CreatedAt: time.Now(),
+		Status:    ReminderStatusPending,
+		Type:      ReminderTypeGeneral,
+		Recurring: false,
+		Context:   make(map[string]interface{}),
+	}
+
+	// Store reminder
+	a.taskMutex.Lock()
+	a.reminders[reminder.ID] = reminder
+	a.taskMutex.Unlock()
+
+	// Save to memory
+	if a.memoryStore != nil {
+		reminderKey := fmt.Sprintf("reminder:%s", reminder.ID)
+		a.memoryStore.Store(ctx, reminderKey, reminder)
+	}
+
+	return &multiagent.Message{
+		ID:        fmt.Sprintf("msg_%s_%d", a.id, time.Now().UnixNano()),
+		From:      a.id,
+		To:        []multiagent.AgentID{msg.From},
+		Type:      multiagent.MessageTypeResponse,
+		Content:   fmt.Sprintf("⏰ Reminder '%s' set for %s\n\nI'll remind you about this. Note: I had to use a simplified approach to create this reminder.", reminder.Title, triggerAt.Format("2006-01-02 15:04")),
+		ReplyTo:   msg.ID,
+		Timestamp: time.Now(),
+		Context: map[string]interface{}{
+			"reminder_id": reminder.ID,
+			"action":      "reminder_created",
+			"fallback":    true,
+		},
+	}, nil
 }
