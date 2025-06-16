@@ -331,11 +331,14 @@ func (a *ConversationAgent) shouldDelegate(content string) bool {
 
 	// Check for specialized topics that specifically require delegation
 	specialistKeywords := map[string][]string{
-		"research": {"research", "find information", "look up", "search for", "information about", "investigate", "analyze data"},
-		"task":     {"create task", "schedule", "remind me", "todo", "to-do", "to do", "set reminder", "plan"},
-		"coder":    {"write code", "programming", "function", "algorithm", "write a program", "debug", "script", "software"},
-		"analyst":  {"analyze", "data analysis", "statistics", "trends", "patterns", "insights", "metrics", "performance"},
-		"writer":   {"write article", "draft", "compose", "blog post", "document", "report", "essay"},
+		"research":     {"research", "find information", "look up", "search for", "information about", "investigate", "analyze data", "fact check", "verify"},
+		"task":        {"create task", "add task", "task", "todo", "to-do", "to do", "remind me", "reminder", "productivity"},
+		"project":     {"create project", "new project", "project", "plan", "planning", "milestone", "timeline", "manage", "track progress"},
+		"schedule":    {"schedule", "calendar", "appointment", "meeting", "book", "available", "free time", "time slot"},
+		"communication": {"email", "message", "contact", "send", "compose", "draft", "write email", "communication", "follow up"},
+		"coder":       {"write code", "programming", "function", "algorithm", "write a program", "debug", "script", "software"},
+		"analyst":     {"analyze", "data analysis", "statistics", "trends", "patterns", "insights", "metrics", "performance"},
+		"writer":      {"write article", "draft", "compose", "blog post", "document", "report", "essay", "outline"},
 	}
 
 	// Only delegate if there are strong indicators for specialist work
@@ -357,30 +360,48 @@ func (a *ConversationAgent) delegateToSpecialists(ctx context.Context, msg *mult
 
 	// Determine which specialists to involve
 	specialists := []multiagent.AgentType{}
+	log.Printf("ConversationAgent: Analyzing content for delegation: %s", contentLower)
 
-	if containsAny(contentLower, []string{"research", "find information", "look up", "search for"}) {
+	if containsAny(contentLower, []string{"research", "find information", "look up", "search for", "investigate", "fact check", "verify"}) {
 		specialists = append(specialists, multiagent.AgentTypeResearch)
+		log.Printf("ConversationAgent: Added research specialist")
 	}
 
-	if containsAny(contentLower, []string{"task", "schedule", "remind", "todo"}) {
+	if containsAny(contentLower, []string{"create task", "add task", "task", "todo", "to-do", "to do", "remind me", "reminder", "productivity"}) {
 		specialists = append(specialists, multiagent.AgentTypeTask)
 	}
 
-	if containsAny(contentLower, []string{"code", "programming", "function", "algorithm"}) {
+	if containsAny(contentLower, []string{"create project", "new project", "project", "plan", "planning", "milestone", "timeline", "manage", "track progress"}) {
+		specialists = append(specialists, multiagent.AgentTypeProjectManager)
+	}
+
+	if containsAny(contentLower, []string{"schedule", "calendar", "appointment", "meeting", "book", "available", "free time", "time slot"}) {
+		specialists = append(specialists, multiagent.AgentTypeScheduler)
+	}
+
+	if containsAny(contentLower, []string{"email", "message", "contact", "send", "compose", "draft", "write email", "communication", "follow up"}) {
+		specialists = append(specialists, multiagent.AgentTypeCommunicationManager)
+		log.Printf("ConversationAgent: Added communication manager specialist")
+	}
+
+	if containsAny(contentLower, []string{"write code", "programming", "function", "algorithm", "debug", "script", "software"}) {
 		specialists = append(specialists, multiagent.AgentTypeCoder)
 	}
 
-	if containsAny(contentLower, []string{"analyze", "data analysis", "statistics", "trends"}) {
+	if containsAny(contentLower, []string{"analyze", "data analysis", "statistics", "trends", "patterns", "insights", "metrics"}) {
 		specialists = append(specialists, multiagent.AgentTypeAnalyst)
 	}
 
-	if containsAny(contentLower, []string{"write", "draft", "compose", "summarize"}) {
+	if containsAny(contentLower, []string{"write article", "draft", "compose", "blog post", "document", "report", "essay", "outline"}) {
 		specialists = append(specialists, multiagent.AgentTypeWriter)
 	}
+
+	log.Printf("ConversationAgent: Selected specialists: %v", specialists)
 
 	// If no specialists matched, use the coordinator
 	if len(specialists) == 0 {
 		specialists = append(specialists, multiagent.AgentTypeCoordinator)
+		log.Printf("ConversationAgent: No specific specialists matched, using coordinator")
 	}
 
 	// Create a task for the coordinator to handle

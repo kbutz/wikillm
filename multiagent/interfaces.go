@@ -15,14 +15,18 @@ type AgentType string
 
 const (
 	// Core agent types
-	AgentTypeCoordinator  AgentType = "coordinator"   // Main orchestrator agent
-	AgentTypeMemory       AgentType = "memory"        // Memory management specialist
-	AgentTypeTask         AgentType = "task"          // Task management specialist
-	AgentTypeResearch     AgentType = "research"      // Research and information gathering
-	AgentTypeAnalyst      AgentType = "analyst"       // Data analysis and insights
-	AgentTypeWriter       AgentType = "writer"        // Content creation and documentation
-	AgentTypeCoder        AgentType = "coder"         // Code generation and review
-	AgentTypeConversation AgentType = "conversation"  // Natural conversation handler
+	AgentTypeCoordinator         AgentType = "coordinator"            // Main orchestrator agent
+	AgentTypeMemory              AgentType = "memory"                 // Memory management specialist
+	AgentTypeTask                AgentType = "task"                   // Task management specialist
+	AgentTypeResearch            AgentType = "research"               // Research and information gathering
+	AgentTypeAnalyst             AgentType = "analyst"                // Data analysis and insights
+	AgentTypeWriter              AgentType = "writer"                 // Content creation and documentation
+	AgentTypeCoder               AgentType = "coder"                  // Code generation and review
+	AgentTypeConversation        AgentType = "conversation"           // Natural conversation handler
+	// Personal assistant specialist types
+	AgentTypeProjectManager      AgentType = "project_manager"        // Project planning and management
+	AgentTypeScheduler           AgentType = "scheduler"              // Calendar and scheduling management
+	AgentTypeCommunicationManager AgentType = "communication_manager" // Communication and contact management
 )
 
 // Priority levels for agent messages and tasks

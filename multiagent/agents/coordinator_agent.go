@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
 	"sync"
 	"time"
@@ -20,25 +21,25 @@ type CoordinatorAgent struct {
 
 // coordination tracks the state of a multi-agent coordination
 type coordination struct {
-	ID              string
-	TaskID          string
-	UserMessage     string
-	ConversationID  string
-	Specialists     []multiagent.AgentType
-	SpecialistIDs   []multiagent.AgentID
-	Responses       map[multiagent.AgentID]string
-	Status          string
-	StartTime       time.Time
-	CompletionTime  *time.Time
-	RequesterID     multiagent.AgentID
-	FinalResponse   string
+	ID             string
+	TaskID         string
+	UserMessage    string
+	ConversationID string
+	Specialists    []multiagent.AgentType
+	SpecialistIDs  []multiagent.AgentID
+	Responses      map[multiagent.AgentID]string
+	Status         string
+	StartTime      time.Time
+	CompletionTime *time.Time
+	RequesterID    multiagent.AgentID
+	FinalResponse  string
 }
 
 // NewCoordinatorAgent creates a new coordinator agent
 func NewCoordinatorAgent(config BaseAgentConfig) *CoordinatorAgent {
 	// Ensure the agent type is correct
 	config.Type = multiagent.AgentTypeCoordinator
-	
+
 	// Add coordinator-specific capabilities
 	config.Capabilities = append(config.Capabilities,
 		"task_delegation",
@@ -46,7 +47,7 @@ func NewCoordinatorAgent(config BaseAgentConfig) *CoordinatorAgent {
 		"agent_coordination",
 		"workflow_management",
 	)
-	
+
 	return &CoordinatorAgent{
 		BaseAgent:           NewBaseAgent(config),
 		activeCoordinations: make(map[string]*coordination),
@@ -107,7 +108,7 @@ func (a *CoordinatorAgent) handleRequest(ctx context.Context, msg *multiagent.Me
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal task data: %w", err)
 	}
-	
+
 	if err := json.Unmarshal(taskData, &task); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal task data: %w", err)
 	}
@@ -115,7 +116,7 @@ func (a *CoordinatorAgent) handleRequest(ctx context.Context, msg *multiagent.Me
 	// Extract coordination details from task input
 	userMessage, _ := task.Input["user_message"].(string)
 	conversationID, _ := task.Input["conversation_id"].(string)
-	
+
 	// Extract specialists
 	var specialists []multiagent.AgentType
 	if specialistsInterface, ok := task.Input["specialists"]; ok {
@@ -192,7 +193,7 @@ func (a *CoordinatorAgent) handleReport(ctx context.Context, msg *multiagent.Mes
 
 	// Store specialist response
 	coord.Responses[msg.From] = msg.Content
-	
+
 	// Check if all specialists have responded
 	allResponded := true
 	for _, specialistID := range coord.SpecialistIDs {
@@ -201,7 +202,7 @@ func (a *CoordinatorAgent) handleReport(ctx context.Context, msg *multiagent.Mes
 			break
 		}
 	}
-	
+
 	a.mu.Unlock()
 
 	// If all specialists have responded, synthesize final response
@@ -231,8 +232,11 @@ func (a *CoordinatorAgent) delegateToSpecialists(ctx context.Context, coord *coo
 
 	// Get available agents for each specialist type
 	for _, specialistType := range coord.Specialists {
+		log.Printf("CoordinatorAgent: Looking for agents of type: %s", specialistType)
 		agents := a.getAgentsByType(ctx, specialistType)
+		log.Printf("CoordinatorAgent: Found %d agents of type %s: %v", len(agents), specialistType, agents)
 		if len(agents) == 0 {
+			log.Printf("CoordinatorAgent: No agents found for type %s, skipping", specialistType)
 			continue
 		}
 
@@ -257,9 +261,11 @@ func (a *CoordinatorAgent) delegateToSpecialists(ctx context.Context, coord *coo
 		}
 
 		// Send message
+		log.Printf("CoordinatorAgent: Sending message to specialist %s (%s)", specialistID, specialistType)
 		if err := a.orchestrator.RouteMessage(ctx, message); err != nil {
 			return fmt.Errorf("failed to send message to specialist %s: %w", specialistID, err)
 		}
+		log.Printf("CoordinatorAgent: Successfully sent message to specialist %s", specialistID)
 	}
 
 	return nil
@@ -279,11 +285,11 @@ func (a *CoordinatorAgent) finalizeCoordination(ctx context.Context, coord *coor
 	promptBuilder.WriteString(fmt.Sprintf("You are %s, a coordinator agent. You need to synthesize responses from specialist agents into a coherent, helpful response for the user.\n\n", a.name))
 	promptBuilder.WriteString(fmt.Sprintf("User message: %s\n\n", coord.UserMessage))
 	promptBuilder.WriteString("Specialist responses:\n")
-	
+
 	for specialistID, response := range coord.Responses {
 		promptBuilder.WriteString(fmt.Sprintf("--- %s ---\n%s\n\n", specialistID, response))
 	}
-	
+
 	promptBuilder.WriteString("Please synthesize these responses into a single, coherent response that addresses the user's request comprehensively. Be concise but thorough, and ensure all relevant information is included.")
 
 	// Query LLM for synthesized response
@@ -337,7 +343,7 @@ func (a *CoordinatorAgent) updateTask(ctx context.Context, coord *coordination) 
 	if err != nil {
 		return fmt.Errorf("failed to marshal task data: %w", err)
 	}
-	
+
 	if err := json.Unmarshal(taskData, &task); err != nil {
 		return fmt.Errorf("failed to unmarshal task data: %w", err)
 	}
@@ -365,7 +371,7 @@ func (a *CoordinatorAgent) getAgentsByType(ctx context.Context, agentType multia
 
 	// Get all agents
 	allAgents := a.orchestrator.ListAgents()
-	
+
 	// Filter by type
 	var matchingAgents []multiagent.AgentID
 	for _, agent := range allAgents {

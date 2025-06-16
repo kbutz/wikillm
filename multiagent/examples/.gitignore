@@ -5,3 +5,4 @@ wikillm_memory/
 *.log
 *.tmp
 .DS_Store
+/assistant_memory/
