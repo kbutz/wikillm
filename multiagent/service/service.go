@@ -87,12 +87,21 @@ func (s *MultiAgentService) Start(ctx context.Context) error {
 
 	// Start all agents
 	for id, agent := range s.agents {
+		// Initialize agent first
+		if err := agent.Initialize(ctx); err != nil {
+			log.Printf("Warning: Failed to initialize agent %s: %v", id, err)
+			continue
+		}
+
+		// Then start agent
 		if err := agent.Start(ctx); err != nil {
 			log.Printf("Warning: Failed to start agent %s: %v", id, err)
+		} else {
+			log.Printf("✅ Started agent: %s (%s)", agent.Name(), id)
 		}
 	}
 
-	log.Println("MultiAgentService started successfully")
+	log.Println("🚀 MultiAgentService started successfully with all specialist agents")
 	return nil
 }
 
@@ -118,26 +127,73 @@ func (s *MultiAgentService) Stop(ctx context.Context) error {
 	s.pendingRequests = make(map[string]chan string)
 	s.requestsMutex.Unlock()
 
-	log.Println("MultiAgentService stopped successfully")
+	log.Println("🛑 MultiAgentService stopped successfully")
 	return nil
 }
 
 // ProcessUserMessage processes a user message and returns a response
 func (s *MultiAgentService) ProcessUserMessage(ctx context.Context, userID string, message string) (string, error) {
-	// Create a conversation ID
-	conversationID := fmt.Sprintf("conv_%s_%d", userID, time.Now().UnixNano())
+	conversationID := fmt.Sprintf("conv_%s", userID)
+	log.Printf("Service: Using consistent conversation ID: %s", conversationID)
 
-	// Instead of complex routing, directly call the conversation agent
-	conversationAgent, exists := s.agents["conversation_agent"]
-	if !exists {
-		return "", fmt.Errorf("conversation agent not found")
+	responseKey := fmt.Sprintf("user_response_%s_%d", userID, time.Now().UnixNano())
+	responseChannel := make(chan string, 10) // Increased buffer
+
+	// Handler state tracking
+	var handlerState struct {
+		mutex      sync.RWMutex
+		registered bool
+		called     bool
+		response   string
+		timestamp  time.Time
 	}
 
-	// Create a message for the conversation agent
+	// Create persistent handler
+	handler := func(response string) {
+		handlerState.mutex.Lock()
+		defer handlerState.mutex.Unlock()
+
+		if handlerState.called {
+			log.Printf("Service: [HANDLER] Already called for key %s, ignoring duplicate", responseKey)
+			return
+		}
+
+		handlerState.called = true
+		handlerState.response = response
+		handlerState.timestamp = time.Now()
+
+		log.Printf("Service: [HANDLER] ✅ Called for key %s at %v", responseKey, handlerState.timestamp)
+		log.Printf("Service: [HANDLER] Response length: %d", len(response))
+
+		// Send to channel with timeout
+		select {
+		case responseChannel <- response:
+			log.Printf("Service: [HANDLER] ✅ Sent to channel for key: %s", responseKey)
+		case <-time.After(10 * time.Second):
+			log.Printf("Service: [HANDLER] ⚠️ Channel send timeout for key: %s", responseKey)
+			// Still store the response for polling
+		}
+	}
+
+	// Register handler with orchestrator
+	if orch, ok := s.orchestrator.(*orchestrator.DefaultOrchestrator); ok {
+		orch.RegisterUserResponseHandler(responseKey, handler)
+		handlerState.mutex.Lock()
+		handlerState.registered = true
+		handlerState.mutex.Unlock()
+		log.Printf("Service: [REGISTER] ✅ Handler registered for key: %s", responseKey)
+	} else {
+		return "", fmt.Errorf("orchestrator does not support user response handlers")
+	}
+
+	// *** CRITICAL: DO NOT SCHEDULE CLEANUP HERE ***
+	// The handler will remain registered until explicitly cleaned up after success
+
+	// Create message
 	msg := &multiagent.Message{
 		ID:        fmt.Sprintf("msg_user_%d", time.Now().UnixNano()),
-		From:      multiagent.AgentID("user_service"), // Use service as sender
-		To:        []multiagent.AgentID{"conversation_agent"},
+		From:      multiagent.AgentID(responseKey),
+		To:        []multiagent.AgentID{multiagent.AgentID("conversation_agent")},
 		Type:      multiagent.MessageTypeRequest,
 		Content:   message,
 		Priority:  multiagent.PriorityMedium,
@@ -146,20 +202,129 @@ func (s *MultiAgentService) ProcessUserMessage(ctx context.Context, userID strin
 			"conversation_id": conversationID,
 			"source":          "user",
 			"user_id":         userID,
+			"response_key":    responseKey,
 		},
 	}
 
-	// Handle the message directly with the conversation agent
-	response, err := conversationAgent.HandleMessage(ctx, msg)
-	if err != nil {
-		return "", fmt.Errorf("failed to process message with conversation agent: %w", err)
+	// Route message
+	if err := s.orchestrator.RouteMessage(ctx, msg); err != nil {
+		// Only cleanup on immediate routing failure
+		log.Printf("Service: [ERROR] Message routing failed, cleaning up handler")
+		if orch, ok := s.orchestrator.(*orchestrator.DefaultOrchestrator); ok {
+			orch.UnregisterUserResponseHandler(responseKey)
+		}
+		return "", fmt.Errorf("failed to route message: %w", err)
 	}
 
-	if response != nil {
-		return response.Content, nil
-	}
+	log.Printf("Service: [ROUTE] ✅ Message routed successfully")
 
-	return "I apologize, but I couldn't process your request at this time.", nil
+	// Wait with VERY aggressive monitoring
+	startTime := time.Now()
+
+	// Status check every 5 seconds
+	statusTicker := time.NewTicker(5 * time.Second)
+	defer statusTicker.Stop()
+
+	// Main response wait loop
+	for {
+		select {
+		case response := <-responseChannel:
+			elapsed := time.Since(startTime)
+			log.Printf("Service: [SUCCESS] ✅ Response received via channel after %v", elapsed)
+
+			// NOW we can cleanup since we got the response
+			if orch, ok := s.orchestrator.(*orchestrator.DefaultOrchestrator); ok {
+				orch.UnregisterUserResponseHandler(responseKey)
+				log.Printf("Service: [CLEANUP] Handler unregistered after successful response")
+			}
+			return response, nil
+
+		case <-statusTicker.C:
+			elapsed := time.Since(startTime)
+
+			// Check handler state first
+			handlerState.mutex.RLock()
+			called := handlerState.called
+			response := handlerState.response
+			handlerState.mutex.RUnlock()
+
+			// If handler was called but response wasn't delivered via channel
+			if called && len(response) > 0 {
+				log.Printf("Service: [RECOVERY] ✅ Found response in handler state after %v", elapsed)
+				if orch, ok := s.orchestrator.(*orchestrator.DefaultOrchestrator); ok {
+					orch.UnregisterUserResponseHandler(responseKey)
+				}
+				return response, nil
+			}
+
+			// Verify handler still exists and re-register if missing
+			if orch, ok := s.orchestrator.(*orchestrator.DefaultOrchestrator); ok {
+				keys := orch.GetUserResponseHandlerKeys()
+				handlerExists := false
+				for _, key := range keys {
+					if key == responseKey {
+						handlerExists = true
+						break
+					}
+				}
+				totalHandlers := orch.GetUserResponseHandlerCount()
+
+				if !handlerExists {
+					log.Printf("Service: [ERROR] ❌ Handler disappeared! Re-registering...")
+					orch.RegisterUserResponseHandler(responseKey, handler)
+					handlerState.mutex.Lock()
+					handlerState.registered = true
+					handlerState.mutex.Unlock()
+				} else {
+					log.Printf("Service: [STATUS] ⏳ Waiting %v, handler exists, total: %d", elapsed, totalHandlers)
+				}
+			}
+
+			// Check for very long waits
+			if elapsed > 20*time.Minute {
+				log.Printf("Service: [TIMEOUT] ⏰ Very long wait (%v), checking for orphaned responses", elapsed)
+
+				if orch, ok := s.orchestrator.(*orchestrator.DefaultOrchestrator); ok {
+					if orphanResponse, found := orch.GetOrphanedResponse(ctx, responseKey); found {
+						log.Printf("Service: [SUCCESS] ✅ Orphaned response recovered after %v", elapsed)
+						orch.UnregisterUserResponseHandler(responseKey)
+						return orphanResponse, nil
+					}
+				}
+			}
+
+			// Ultimate timeout
+			if elapsed > 30*time.Minute {
+				log.Printf("Service: [TIMEOUT] ❌ Ultimate timeout reached after %v", elapsed)
+
+				// Final check for any response
+				handlerState.mutex.RLock()
+				finalResponse := handlerState.response
+				handlerState.mutex.RUnlock()
+
+				if len(finalResponse) > 0 {
+					log.Printf("Service: [SUCCESS] ✅ Last-chance response found")
+					if orch, ok := s.orchestrator.(*orchestrator.DefaultOrchestrator); ok {
+						orch.UnregisterUserResponseHandler(responseKey)
+					}
+					return finalResponse, nil
+				}
+
+				// Give up
+				if orch, ok := s.orchestrator.(*orchestrator.DefaultOrchestrator); ok {
+					orch.UnregisterUserResponseHandler(responseKey)
+				}
+				return fmt.Sprintf("Request timed out after %v. The system may still be processing your request. Please try again.", elapsed.Round(time.Second)), nil
+			}
+
+		case <-ctx.Done():
+			log.Printf("Service: [CANCELLED] Context cancelled")
+			if orch, ok := s.orchestrator.(*orchestrator.DefaultOrchestrator); ok {
+				orch.UnregisterUserResponseHandler(responseKey)
+			}
+			return "", ctx.Err()
+		}
+	}
 }
 
 // GetAgent returns an agent by ID
@@ -181,9 +346,81 @@ func (s *MultiAgentService) GetMemoryStore() multiagent.MemoryStore {
 	return s.memoryStore
 }
 
+// AgentInfo provides information about an agent for display purposes
+type AgentInfo struct {
+	ID           string   `json:"id"`
+	Name         string   `json:"name"`
+	Description  string   `json:"description"`
+	Status       string   `json:"status"`
+	Capabilities []string `json:"capabilities"`
+}
+
+// SystemHealthInfo provides extended health information for display purposes
+type SystemHealthInfo struct {
+	Status            string        `json:"status"`
+	ActiveAgents      int           `json:"active_agents"`
+	TotalAgents       int           `json:"total_agents"`
+	MessagesProcessed int           `json:"messages_processed"`
+	MessageQueueSize  int           `json:"message_queue_size"`
+	EventsProcessed   int           `json:"events_processed"`
+	EventQueueSize    int           `json:"event_queue_size"`
+	Uptime            time.Duration `json:"uptime"`
+}
+
+// ListAgents returns information about all registered agents
+func (s *MultiAgentService) ListAgents() []AgentInfo {
+	agents := s.orchestrator.ListAgents()
+	agentInfos := make([]AgentInfo, 0, len(agents))
+
+	for _, agent := range agents {
+		state := agent.GetState()
+		agentInfos = append(agentInfos, AgentInfo{
+			ID:           string(agent.ID()),
+			Name:         agent.Name(),
+			Description:  agent.Description(),
+			Status:       string(state.Status),
+			Capabilities: state.Capabilities,
+		})
+	}
+
+	return agentInfos
+}
+
 // GetSystemHealth returns the current health of the system
-func (s *MultiAgentService) GetSystemHealth() multiagent.SystemHealth {
-	return s.orchestrator.GetSystemHealth()
+func (s *MultiAgentService) GetSystemHealth() SystemHealthInfo {
+	health := s.orchestrator.GetSystemHealth()
+
+	// Get message and event queue stats from orchestrator if available
+	messagesProcessed := 0
+	eventsProcessed := 0
+	messageQueueSize := health.MessageQueue
+	eventQueueSize := 0
+
+	if orch, ok := s.orchestrator.(*orchestrator.DefaultOrchestrator); ok {
+		// These methods might not exist, but if they do, we'll use them
+		if statsProvider, ok := interface{}(orch).(interface{
+			GetMessageQueueSize() int
+			GetEventQueueSize() int
+			GetMessagesProcessed() int
+			GetEventsProcessed() int
+		}); ok {
+			messageQueueSize = statsProvider.GetMessageQueueSize()
+			eventQueueSize = statsProvider.GetEventQueueSize()
+			messagesProcessed = statsProvider.GetMessagesProcessed()
+			eventsProcessed = statsProvider.GetEventsProcessed()
+		}
+	}
+
+	return SystemHealthInfo{
+		Status:            string(health.Status),
+		ActiveAgents:      health.ActiveAgents,
+		TotalAgents:       health.TotalAgents,
+		MessagesProcessed: messagesProcessed,
+		MessageQueueSize:  messageQueueSize,
+		EventsProcessed:   eventsProcessed,
+		EventQueueSize:    eventQueueSize,
+		Uptime:            health.Uptime,
+	}
 }
 
 // initializeTools initializes all tools
@@ -196,10 +433,11 @@ func (s *MultiAgentService) initializeTools() error {
 	taskTool := tools.NewTaskTool(s.memoryStore, s.orchestrator)
 	s.tools[taskTool.Name()] = taskTool
 
+	log.Printf("📚 Initialized %d tools", len(s.tools))
 	return nil
 }
 
-// initializeAgents initializes all agents
+// initializeAgents initializes ALL agents including new specialist agents
 func (s *MultiAgentService) initializeAgents() error {
 	// Create a list of tools for agents
 	agentTools := make([]multiagent.Tool, 0, len(s.tools))
@@ -207,12 +445,74 @@ func (s *MultiAgentService) initializeAgents() error {
 		agentTools = append(agentTools, tool)
 	}
 
-	// Create conversation agent
+	log.Println("🤖 Initializing all specialist agents...")
+
+	// 1. Create Project Manager Agent
+	projectManagerAgent := agents.NewProjectManagerAgent(agents.BaseAgentConfig{
+		ID:           "project_manager_agent",
+		Name:         "Project Manager",
+		Description:  "Specialized in project planning, task management, and progress tracking",
+		Tools:        agentTools,
+		LLMProvider:  s.llmProvider,
+		MemoryStore:  s.memoryStore,
+		Orchestrator: s.orchestrator,
+	})
+	s.agents[projectManagerAgent.ID()] = projectManagerAgent
+
+	// 2. Create Task Manager Agent
+	taskManagerAgent := agents.NewTaskManagerAgent(agents.BaseAgentConfig{
+		ID:           "task_manager_agent",
+		Name:         "Task Manager",
+		Description:  "Personal productivity specialist using GTD methodology",
+		Tools:        agentTools,
+		LLMProvider:  s.llmProvider,
+		MemoryStore:  s.memoryStore,
+		Orchestrator: s.orchestrator,
+	})
+	s.agents[taskManagerAgent.ID()] = taskManagerAgent
+
+	// 3. Create Research Assistant Agent
+	researchAssistantAgent := agents.NewResearchAssistantAgent(agents.BaseAgentConfig{
+		ID:           "research_assistant_agent",
+		Name:         "Research Assistant",
+		Description:  "Information gathering, fact-checking, and knowledge synthesis specialist",
+		Tools:        agentTools,
+		LLMProvider:  s.llmProvider,
+		MemoryStore:  s.memoryStore,
+		Orchestrator: s.orchestrator,
+	})
+	s.agents[researchAssistantAgent.ID()] = researchAssistantAgent
+
+	// 4. Create Scheduler Agent
+	schedulerAgent := agents.NewSchedulerAgent(agents.BaseAgentConfig{
+		ID:           "scheduler_agent",
+		Name:         "Scheduler",
+		Description:  "Calendar management and appointment scheduling specialist",
+		Tools:        agentTools,
+		LLMProvider:  s.llmProvider,
+		MemoryStore:  s.memoryStore,
+		Orchestrator: s.orchestrator,
+	})
+	s.agents[schedulerAgent.ID()] = schedulerAgent
+
+	// 5. Create Communication Manager Agent
+	communicationManagerAgent := agents.NewCommunicationManagerAgent(agents.BaseAgentConfig{
+		ID:           "communication_manager_agent",
+		Name:         "Communication Manager",
+		Description:  "Contact management and communication coordination specialist",
+		Tools:        agentTools,
+		LLMProvider:  s.llmProvider,
+		MemoryStore:  s.memoryStore,
+		Orchestrator: s.orchestrator,
+	})
+	s.agents[communicationManagerAgent.ID()] = communicationManagerAgent
+
+	// 6. Create Conversation Agent (handles routing to specialists)
 	conversationAgent := agents.NewConversationAgent(agents.BaseAgentConfig{
 		ID:           "conversation_agent",
 		Type:         multiagent.AgentTypeConversation,
 		Name:         "Conversation Agent",
-		Description:  "Handles natural language conversations with users",
+		Description:  "Natural language interface that routes requests to appropriate specialists",
 		Tools:        agentTools,
 		LLMProvider:  s.llmProvider,
 		MemoryStore:  s.memoryStore,
@@ -220,12 +520,12 @@ func (s *MultiAgentService) initializeAgents() error {
 	})
 	s.agents[conversationAgent.ID()] = conversationAgent
 
-	// Create coordinator agent
+	// 7. Create Coordinator Agent (manages multi-agent workflows)
 	coordinatorAgent := agents.NewCoordinatorAgent(agents.BaseAgentConfig{
 		ID:           "coordinator_agent",
 		Type:         multiagent.AgentTypeCoordinator,
 		Name:         "Coordinator Agent",
-		Description:  "Coordinates specialist agents to handle complex tasks",
+		Description:  "Coordinates specialist agents to handle complex multi-step tasks",
 		Tools:        agentTools,
 		LLMProvider:  s.llmProvider,
 		MemoryStore:  s.memoryStore,
@@ -233,13 +533,14 @@ func (s *MultiAgentService) initializeAgents() error {
 	})
 	s.agents[coordinatorAgent.ID()] = coordinatorAgent
 
-	// Register agents with orchestrator
+	// Register all agents with orchestrator
 	for _, agent := range s.agents {
 		if err := s.orchestrator.RegisterAgent(agent); err != nil {
 			return fmt.Errorf("failed to register agent %s: %w", agent.ID(), err)
 		}
 	}
 
+	log.Printf("📋 Initialized %d specialist agents", len(s.agents))
 	return nil
 }
 

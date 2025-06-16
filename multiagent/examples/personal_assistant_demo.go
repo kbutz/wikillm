@@ -8,6 +8,7 @@ import (
 
 	"github.com/kbutz/wikillm/multiagent"
 	"github.com/kbutz/wikillm/multiagent/agents"
+	"github.com/kbutz/wikillm/multiagent/llmprovider"
 	"github.com/kbutz/wikillm/multiagent/memory"
 	"github.com/kbutz/wikillm/multiagent/orchestrator"
 )
@@ -52,10 +53,10 @@ func main() {
 	}
 
 	// Initialize LLM provider
-	llmProvider := NewLMStudioProvider("http://localhost:1234/v1",
-		WithTemperature(0.7),
-		WithMaxTokens(2048),
-		WithDebug(true), // Enable debug mode to help diagnose issues
+	llmProvider := llmprovider.NewLMStudioProvider("http://localhost:1234/v1",
+		llmprovider.WithTemperature(0.7),
+		llmprovider.WithMaxTokens(2048),
+		llmprovider.WithDebug(true), // Enable debug mode to help diagnose issues
 	)
 
 	// Create orchestrator
