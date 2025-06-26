@@ -11,6 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import func
+from httpx import TimeoutException
 
 # Local imports
 from config import settings
@@ -46,16 +47,16 @@ async def lifespan(app: FastAPI):
     # Startup
     logger.info("Starting AI Assistant API...")
     init_database()
-    
+
     # Check LMStudio connection
     lmstudio_connected = await lmstudio_client.health_check()
     if lmstudio_connected:
         logger.info("LMStudio connection successful")
     else:
         logger.warning("LMStudio connection failed - some features may not work")
-    
+
     yield
-    
+
     # Shutdown
     logger.info("Shutting down AI Assistant API...")
 
@@ -98,12 +99,12 @@ def create_user(user: UserCreate, db: Session = Depends(get_db)):
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Username already registered"
         )
-    
+
     db_user = User(**user.dict())
     db.add(db_user)
     db.commit()
     db.refresh(db_user)
-    
+
     logger.info(f"Created new user: {user.username}")
     return db_user
 
@@ -142,7 +143,7 @@ def create_conversation(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="User not found"
         )
-    
+
     return conv_manager.create_conversation(conversation.user_id, conversation.title)
 
 
@@ -202,7 +203,7 @@ async def chat(
 ):
     """Send a chat message and get response"""
     start_time = time.time()
-    
+
     try:
         # Verify user exists
         user = db.query(User).filter(User.id == request.user_id).first()
@@ -211,7 +212,7 @@ async def chat(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="User not found"
             )
-        
+
         # Get or create conversation
         if request.conversation_id:
             conversation = conv_manager.get_conversation(request.conversation_id, request.user_id)
@@ -222,21 +223,21 @@ async def chat(
                 )
         else:
             conversation = conv_manager.create_conversation(request.user_id)
-        
+
         # Add user message
         user_message = conv_manager.add_message(
             conversation.id,
             "user",
             request.message
         )
-        
+
         # Build conversation context
         context = conv_manager.build_conversation_context(
             conversation.id,
             request.user_id,
             max_messages=settings.max_conversation_history
         )
-        
+
         # Get LLM response
         llm_response = await lmstudio_client.chat_completion(
             messages=context,
@@ -244,10 +245,10 @@ async def chat(
             max_tokens=request.max_tokens,
             stream=False
         )
-        
+
         # Extract response content
         response_content = llm_response["choices"][0]["message"]["content"]
-        
+
         # Add assistant message
         processing_time = time.time() - start_time
         assistant_message = conv_manager.add_message(
@@ -261,7 +262,7 @@ async def chat(
                 "token_count": llm_response.get("usage", {}).get("total_tokens")
             }
         )
-        
+
         # Extract and store implicit memories (background task)
         background_tasks.add_task(
             extract_and_store_memories,
@@ -270,7 +271,7 @@ async def chat(
             response_content,
             memory_manager
         )
-        
+
         # Auto-generate conversation title if it's the first exchange
         if len(conv_manager.get_conversation_messages(conversation.id)) == 2:
             background_tasks.add_task(
@@ -278,14 +279,20 @@ async def chat(
                 conversation.id,
                 conv_manager
             )
-        
+
         return ChatResponse(
             message=assistant_message,
             conversation_id=conversation.id,
             processing_time=processing_time,
             token_count=llm_response.get("usage", {}).get("total_tokens")
         )
-        
+
+    except TimeoutException as e:
+        logger.error(f"LMStudio timeout error: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            detail="LMStudio is taking longer than expected to respond. This may be due to high processing load. Please wait a moment and try again."
+        )
     except Exception as e:
         logger.error(f"Chat error: {e}")
         raise HTTPException(
@@ -305,18 +312,18 @@ async def chat_stream(
     """Stream chat response"""
     if not request.stream:
         request.stream = True
-    
+
     async def generate():
         start_time = time.time()
         full_response = ""
-        
+
         try:
             # Verify user and get/create conversation (same as above)
             user = db.query(User).filter(User.id == request.user_id).first()
             if not user:
                 yield f"data: {json.dumps({'error': 'User not found'})}\\n\\n"
                 return
-            
+
             if request.conversation_id:
                 conversation = conv_manager.get_conversation(request.conversation_id, request.user_id)
                 if not conversation:
@@ -324,21 +331,21 @@ async def chat_stream(
                     return
             else:
                 conversation = conv_manager.create_conversation(request.user_id)
-            
+
             # Add user message
             user_message = conv_manager.add_message(
                 conversation.id,
                 "user",
                 request.message
             )
-            
+
             # Build context
             context = conv_manager.build_conversation_context(
                 conversation.id,
                 request.user_id,
                 max_messages=settings.max_conversation_history
             )
-            
+
             # Stream LLM response
             async for chunk in lmstudio_client.chat_completion(
                 messages=context,
@@ -351,14 +358,14 @@ async def chat_stream(
                     if "content" in delta:
                         content = delta["content"]
                         full_response += content
-                        
+
                         response_data = {
                             "chunk": content,
                             "conversation_id": conversation.id,
                             "finished": False
                         }
                         yield f"data: {json.dumps(response_data)}\\n\\n"
-            
+
             # Send completion signal
             processing_time = time.time() - start_time
             completion_data = {
@@ -368,7 +375,7 @@ async def chat_stream(
                 "processing_time": processing_time
             }
             yield f"data: {json.dumps(completion_data)}\\n\\n"
-            
+
             # Store assistant message
             conv_manager.add_message(
                 conversation.id,
@@ -380,7 +387,7 @@ async def chat_stream(
                     "processing_time": processing_time
                 }
             )
-            
+
             # Background tasks for memory extraction
             background_tasks.add_task(
                 extract_and_store_memories,
@@ -389,12 +396,17 @@ async def chat_stream(
                 full_response,
                 memory_manager
             )
-            
+
+        except TimeoutException as e:
+            logger.error(f"LMStudio stream timeout error: {e}")
+            error_message = "LMStudio is taking longer than expected to respond. This may be due to high processing load. Please wait a moment and try again."
+            error_data = {"error": error_message, "finished": True}
+            yield f"data: {json.dumps(error_data)}\\n\\n"
         except Exception as e:
             logger.error(f"Stream chat error: {e}")
             error_data = {"error": str(e), "finished": True}
             yield f"data: {json.dumps(error_data)}\\n\\n"
-    
+
     return StreamingResponse(generate(), media_type="text/plain")
 
 
@@ -434,13 +446,13 @@ def delete_user_memory(
         UserMemory.id == memory_id,
         UserMemory.user_id == user_id
     ).first()
-    
+
     if not memory:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Memory entry not found"
         )
-    
+
     db.delete(memory)
     db.commit()
     return {"message": "Memory deleted successfully"}
@@ -451,13 +463,13 @@ def delete_user_memory(
 async def get_system_status(db: Session = Depends(get_db)):
     """Get system status"""
     lmstudio_connected = await lmstudio_client.health_check()
-    
+
     # Get database stats
     total_users = db.query(func.count(User.id)).scalar()
     active_conversations = db.query(func.count(Conversation.id)).filter(
         Conversation.is_active == True
     ).scalar()
-    
+
     return SystemStatus(
         status="healthy",
         version=settings.api_version,

@@ -14,14 +14,14 @@ Base = declarative_base()
 class User(Base):
     """User model for storing user information and preferences"""
     __tablename__ = "users"
-    
+
     id = Column(Integer, primary_key=True, index=True)
     username = Column(String(50), unique=True, index=True, nullable=False)
     email = Column(String(100), unique=True, index=True, nullable=True)
     full_name = Column(String(100), nullable=True)
     created_at = Column(DateTime, default=func.now())
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
-    
+
     # Relationships
     conversations = relationship("Conversation", back_populates="user", cascade="all, delete-orphan")
     user_memory = relationship("UserMemory", back_populates="user", cascade="all, delete-orphan")
@@ -31,14 +31,14 @@ class User(Base):
 class Conversation(Base):
     """Conversation model for chat contexts"""
     __tablename__ = "conversations"
-    
+
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     title = Column(String(200), nullable=False)
     created_at = Column(DateTime, default=func.now())
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
     is_active = Column(Boolean, default=True)
-    
+
     # Relationships
     user = relationship("User", back_populates="conversations")
     messages = relationship("Message", back_populates="conversation", cascade="all, delete-orphan")
@@ -47,19 +47,19 @@ class Conversation(Base):
 class Message(Base):
     """Individual messages within conversations"""
     __tablename__ = "messages"
-    
+
     id = Column(Integer, primary_key=True, index=True)
     conversation_id = Column(Integer, ForeignKey("conversations.id"), nullable=False)
     role = Column(String(20), nullable=False)  # 'user', 'assistant', 'system'
     content = Column(Text, nullable=False)
     timestamp = Column(DateTime, default=func.now())
-    
+
     # Optional metadata
     token_count = Column(Integer, nullable=True)
     model_used = Column(String(100), nullable=True)
     temperature = Column(Float, nullable=True)
     processing_time = Column(Float, nullable=True)  # seconds
-    
+
     # Relationships
     conversation = relationship("Conversation", back_populates="messages")
 
@@ -67,7 +67,7 @@ class Message(Base):
 class UserMemory(Base):
     """User memory entries for personalization"""
     __tablename__ = "user_memory"
-    
+
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     memory_type = Column(String(50), nullable=False)  # 'explicit', 'implicit', 'preference'
@@ -79,7 +79,7 @@ class UserMemory(Base):
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
     last_accessed = Column(DateTime, default=func.now())
     access_count = Column(Integer, default=0)
-    
+
     # Relationships
     user = relationship("User", back_populates="user_memory")
 
@@ -87,7 +87,7 @@ class UserMemory(Base):
 class UserPreference(Base):
     """User preferences and settings"""
     __tablename__ = "user_preferences"
-    
+
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     category = Column(String(50), nullable=False)  # 'response_style', 'model_settings', etc.
@@ -95,7 +95,7 @@ class UserPreference(Base):
     value = Column(JSON, nullable=False)
     created_at = Column(DateTime, default=func.now())
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
-    
+
     # Relationships
     user = relationship("User", back_populates="preferences")
 
@@ -103,13 +103,13 @@ class UserPreference(Base):
 class ConversationSummary(Base):
     """Conversation summaries for memory efficiency"""
     __tablename__ = "conversation_summaries"
-    
+
     id = Column(Integer, primary_key=True, index=True)
     conversation_id = Column(Integer, ForeignKey("conversations.id"), nullable=False)
     summary = Column(Text, nullable=False)
     message_count = Column(Integer, nullable=False)
     created_at = Column(DateTime, default=func.now())
-    
+
     # Relationships
     conversation = relationship("Conversation")
 
@@ -117,11 +117,11 @@ class ConversationSummary(Base):
 class SystemLog(Base):
     """System logs for debugging and monitoring"""
     __tablename__ = "system_logs"
-    
+
     id = Column(Integer, primary_key=True, index=True)
     level = Column(String(20), nullable=False)  # 'DEBUG', 'INFO', 'WARNING', 'ERROR'
     message = Column(Text, nullable=False)
     component = Column(String(100), nullable=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
-    metadata = Column(JSON, nullable=True)
+    log_metadata = Column(JSON, nullable=True)
     timestamp = Column(DateTime, default=func.now())
