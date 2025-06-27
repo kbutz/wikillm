@@ -1,11 +1,12 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Send, MessageSquare, Plus, Trash2, User, Settings, Brain, Clock } from 'lucide-react';
+import { Send, MessageSquare, Plus, Trash2, User, Settings, Brain, Clock, Database } from 'lucide-react';
 import { ApiService } from '../services/api';
 import { User as UserType, Message, Conversation, UserMemory } from '../types';
 import MessageBubble from './MessageBubble';
 import LoadingMessage from './LoadingMessage';
 import UserSetupModal from './UserSetupModal';
 import MemoryPanel from './MemoryPanel';
+import DebugPanel from './DebugPanel';
 
 const api = new ApiService();
 
@@ -19,6 +20,7 @@ export default function AIAssistantApp() {
   const [showUserSetup, setShowUserSetup] = useState(true);
   const [userMemories, setUserMemories] = useState<UserMemory[]>([]);
   const [showMemories, setShowMemories] = useState(false);
+  const [showDebugPanel, setShowDebugPanel] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   // Initialize user
@@ -57,7 +59,7 @@ export default function AIAssistantApp() {
   // Create new conversation
   const createNewConversation = async () => {
     if (!currentUser) return;
-    
+
     try {
       const conv = await api.createConversation(currentUser.id, 'New Conversation');
       setConversations(prev => [conv, ...prev]);
@@ -91,7 +93,7 @@ export default function AIAssistantApp() {
       });
 
       setMessages(prev => [...prev, response.message]);
-      
+
       // Update active conversation or create new one
       if (!activeConversation) {
         const updatedConvs = await api.getUserConversations(currentUser.id);
@@ -123,7 +125,7 @@ export default function AIAssistantApp() {
   // Delete conversation
   const deleteConversation = async (conversationId: number) => {
     if (!currentUser) return;
-    
+
     try {
       await api.deleteConversation(conversationId, currentUser.id);
       setConversations(prev => prev.filter(c => c.id !== conversationId));
@@ -179,8 +181,15 @@ export default function AIAssistantApp() {
             >
               <Brain className="w-5 h-5 text-gray-600" />
             </button>
+            <button
+              onClick={() => setShowDebugPanel(true)}
+              className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
+              title="Debug Panel"
+            >
+              <Database className="w-5 h-5 text-gray-600" />
+            </button>
           </div>
-          
+
           <button
             onClick={createNewConversation}
             className="w-full flex items-center justify-center px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
@@ -221,7 +230,7 @@ export default function AIAssistantApp() {
               </div>
             </div>
           ))}
-          
+
           {conversations.length === 0 && (
             <div className="p-8 text-center text-gray-500">
               <MessageSquare className="w-12 h-12 mx-auto mb-3 text-gray-300" />
@@ -309,6 +318,14 @@ export default function AIAssistantApp() {
         <MemoryPanel
           memories={userMemories}
           onClose={() => setShowMemories(false)}
+        />
+      )}
+
+      {/* Debug Panel */}
+      {showDebugPanel && currentUser && (
+        <DebugPanel
+          userId={currentUser.id}
+          onClose={() => setShowDebugPanel(false)}
         />
       )}
     </div>

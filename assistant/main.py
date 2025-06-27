@@ -458,6 +458,38 @@ def delete_user_memory(
     return {"message": "Memory deleted successfully"}
 
 
+@app.put("/users/{user_id}/memory/{memory_id}", response_model=UserMemorySchema)
+def update_user_memory(
+    user_id: int,
+    memory_id: int,
+    memory_update: UserMemoryCreate,
+    db: Session = Depends(get_db)
+):
+    """Update a user memory entry"""
+    memory = db.query(UserMemory).filter(
+        UserMemory.id == memory_id,
+        UserMemory.user_id == user_id
+    ).first()
+
+    if not memory:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Memory entry not found"
+        )
+
+    # Update memory fields
+    memory.memory_type = memory_update.memory_type
+    memory.key = memory_update.key
+    memory.value = memory_update.value
+    memory.confidence = memory_update.confidence
+    memory.source = memory_update.source
+    memory.updated_at = func.now()
+
+    db.commit()
+    db.refresh(memory)
+    return memory
+
+
 # System status endpoint
 @app.get("/status", response_model=SystemStatus)
 async def get_system_status(db: Session = Depends(get_db)):
