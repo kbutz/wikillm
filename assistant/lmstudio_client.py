@@ -1,5 +1,5 @@
 """
-LMStudio Integration Client
+LMStudio Integration Client - Fixed with MCP Tool Support
 """
 import httpx
 import json
@@ -43,9 +43,11 @@ class LMStudioClient:
         messages: List[Dict[str, str]],
         temperature: float = None,
         max_tokens: int = None,
-        stream: bool = False
+        stream: bool = False,
+        tools: Optional[List[Dict[str, Any]]] = None,
+        tool_choice: Optional[str] = None
     ) -> Dict[str, Any]:
-        """Send chat completion request to LMStudio"""
+        """Send chat completion request to LMStudio with MCP tool support"""
         
         payload = {
             "model": self.model,
@@ -54,6 +56,12 @@ class LMStudioClient:
             "max_tokens": max_tokens or settings.default_max_tokens,
             "stream": stream
         }
+        
+        # Add tools if provided (for MCP integration)
+        if tools:
+            payload["tools"] = tools
+            if tool_choice:
+                payload["tool_choice"] = tool_choice
         
         try:
             if stream:

@@ -7,6 +7,7 @@ import LoadingMessage from './LoadingMessage';
 import UserSetupModal from './UserSetupModal';
 import MemoryPanel from './MemoryPanel';
 import DebugPanel from './DebugPanel';
+import MCPDebugPanel from './MCPDebugPanel';
 
 const api = new ApiService();
 
@@ -211,7 +212,7 @@ export default function AIAssistantApp() {
               className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
               title="Debug Panel"
             >
-              <Database className="w-5 h-5 text-gray-600" />
+              <Settings className="w-5 h-5 text-gray-600" />
             </button>
           </div>
 
@@ -348,7 +349,7 @@ export default function AIAssistantApp() {
 
       {/* Debug Panel */}
       {showDebugPanel && currentUser && (
-        <DebugPanel
+        <MCPDebugPanel
           userId={currentUser.id}
           onClose={() => setShowDebugPanel(false)}
         />

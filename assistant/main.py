@@ -1,9 +1,10 @@
 """
-Main FastAPI application for AI Assistant
+Enhanced Main FastAPI application with MCP Integration
 """
 import logging
 import time
 import json
+import os
 from contextlib import asynccontextmanager
 from typing import List, Optional, Dict, Any, Tuple
 from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks, status
@@ -28,7 +29,13 @@ from schemas import (
 )
 from lmstudio_client import lmstudio_client
 from memory_manager import MemoryManager, EnhancedMemoryManager
-from conversation_manager import ConversationManager
+from enhanced_conversation_manager import EnhancedConversationManager
+
+# MCP Integration imports
+from mcp_integration import (
+    register_mcp_routes, initialize_mcp_system, shutdown_mcp_system,
+    get_mcp_tools_for_assistant, handle_mcp_tool_call
+)
 
 # Configure logging
 logging.basicConfig(
@@ -44,10 +51,13 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Application lifespan management"""
+    """Application lifespan management with MCP integration"""
     # Startup
-    logger.info("Starting AI Assistant API...")
+    logger.info("Starting AI Assistant API with MCP integration...")
     init_database()
+
+    # Initialize MCP system
+    await initialize_mcp_system()
 
     # Check LMStudio connection
     lmstudio_connected = await lmstudio_client.health_check()
@@ -60,13 +70,14 @@ async def lifespan(app: FastAPI):
 
     # Shutdown
     logger.info("Shutting down AI Assistant API...")
+    await shutdown_mcp_system()
 
 
 # Create FastAPI app
 app = FastAPI(
     title=settings.api_title,
     version=settings.api_version,
-    description="Production-ready AI Assistant with conversation memory and user personalization",
+    description="Production-ready AI Assistant with MCP integration, conversation memory and user personalization",
     lifespan=lifespan
 )
 
@@ -79,10 +90,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Register MCP routes
+register_mcp_routes(app)
 
-# Dependency for getting conversation manager
-def get_conversation_manager(db: Session = Depends(get_db)) -> ConversationManager:
-    return ConversationManager(db)
+
+# Enhanced dependency for getting conversation manager with MCP integration
+def get_enhanced_conversation_manager(db: Session = Depends(get_db)) -> EnhancedConversationManager:
+    return EnhancedConversationManager(db)
 
 
 def get_memory_manager(db: Session = Depends(get_db)) -> MemoryManager:
@@ -93,11 +107,10 @@ def get_enhanced_memory_manager(db: Session = Depends(get_db)) -> EnhancedMemory
     return EnhancedMemoryManager(db)
 
 
-# User management endpoints
+# User management endpoints (unchanged)
 @app.post("/users/", response_model=UserSchema, status_code=status.HTTP_201_CREATED)
 def create_user(user: UserCreate, db: Session = Depends(get_db)):
     """Create a new user"""
-    # Check if user already exists
     existing_user = db.query(User).filter(User.username == user.username).first()
     if existing_user:
         raise HTTPException(
@@ -133,15 +146,14 @@ def list_users(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
     return users
 
 
-# Conversation management endpoints
+# Conversation management endpoints with MCP integration
 @app.post("/conversations/", response_model=ConversationSchema, status_code=status.HTTP_201_CREATED)
 def create_conversation(
     conversation: ConversationCreate,
     db: Session = Depends(get_db),
-    conv_manager: ConversationManager = Depends(get_conversation_manager)
+    conv_manager: EnhancedConversationManager = Depends(get_enhanced_conversation_manager)
 ):
     """Create a new conversation"""
-    # Verify user exists
     user = db.query(User).filter(User.id == conversation.user_id).first()
     if not user:
         raise HTTPException(
@@ -157,7 +169,7 @@ def get_conversation(
     conversation_id: int,
     user_id: int,
     db: Session = Depends(get_db),
-    conv_manager: ConversationManager = Depends(get_conversation_manager)
+    conv_manager: EnhancedConversationManager = Depends(get_enhanced_conversation_manager)
 ):
     """Get a specific conversation"""
     conversation = conv_manager.get_conversation(conversation_id, user_id)
@@ -174,7 +186,7 @@ def get_user_conversations(
     user_id: int,
     limit: int = 50,
     db: Session = Depends(get_db),
-    conv_manager: ConversationManager = Depends(get_conversation_manager)
+    conv_manager: EnhancedConversationManager = Depends(get_enhanced_conversation_manager)
 ):
     """Get all conversations for a user"""
     return conv_manager.get_user_conversations(user_id, limit)
@@ -185,7 +197,7 @@ def delete_conversation(
     conversation_id: int,
     user_id: int,
     db: Session = Depends(get_db),
-    conv_manager: ConversationManager = Depends(get_conversation_manager)
+    conv_manager: EnhancedConversationManager = Depends(get_enhanced_conversation_manager)
 ):
     """Delete a conversation"""
     success = conv_manager.delete_conversation(conversation_id, user_id)
@@ -197,102 +209,46 @@ def delete_conversation(
     return {"message": "Conversation deleted successfully"}
 
 
-# Search endpoints
-@app.get("/users/{user_id}/conversations/search")
-async def search_conversations(
+# Tool usage analytics endpoint
+@app.get("/conversations/{conversation_id}/tools/analytics")
+async def get_conversation_tool_analytics(
+    conversation_id: int,
     user_id: int,
-    q: str,
-    limit: int = 5,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    conv_manager: EnhancedConversationManager = Depends(get_enhanced_conversation_manager)
 ):
-    """Search past conversations"""
+    """Get tool usage analytics for a conversation"""
     try:
-        from search_manager import SearchManager
-        search_manager = SearchManager(db)
-        
-        # Verify user exists
-        user = db.query(User).filter(User.id == user_id).first()
-        if not user:
+        # Verify conversation belongs to user
+        conversation = conv_manager.get_conversation(conversation_id, user_id)
+        if not conversation:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail="User not found"
+                detail="Conversation not found"
             )
-        
-        results = await search_manager.search_conversations(user_id, q, limit)
-        
-        # Format results for API response
-        formatted_results = []
-        for summary in results:
-            try:
-                formatted_results.append({
-                    "conversation_id": summary.conversation_id,
-                    "title": summary.conversation.title,
-                    "summary": summary.summary,
-                    "keywords": summary.keywords,
-                    "priority_score": getattr(summary, 'priority_score', 0.0),
-                    "created_at": summary.conversation.created_at,
-                    "updated_at": summary.conversation.updated_at
-                })
-            except Exception as e:
-                logger.warning(f"Could not format search result: {e}")
-                continue
-        
-        return {
-            "query": q,
-            "results": formatted_results,
-            "total_found": len(formatted_results)
-        }
+
+        analytics = await conv_manager.get_tool_usage_analytics(conversation_id)
+        return {"success": True, "data": analytics}
+
     except Exception as e:
-        logger.error(f"Search conversations error: {e}")
+        logger.error(f"Failed to get tool analytics: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Search failed: {str(e)}"
+            detail=f"Failed to get tool analytics: {str(e)}"
         )
 
 
-@app.get("/users/{user_id}/priorities")
-async def get_user_priorities(
-    user_id: int,
-    db: Session = Depends(get_db)
-):
-    """Extract priorities from conversation history"""
-    try:
-        from search_manager import SearchManager
-        search_manager = SearchManager(db)
-        
-        # Verify user exists
-        user = db.query(User).filter(User.id == user_id).first()
-        if not user:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="User not found"
-            )
-        
-        priorities = await search_manager.get_user_priorities(user_id)
-        
-        return {
-            "user_id": user_id,
-            "extracted_at": datetime.now().isoformat(),
-            "priorities": priorities
-        }
-    except Exception as e:
-        logger.error(f"Get priorities error: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Priority extraction failed: {str(e)}"
-        )
-
-
-@app.post("/chat/with-history", response_model=ChatResponse)
-async def chat_with_history(
+# Enhanced chat endpoints with MCP tool integration
+@app.post("/chat", response_model=ChatResponse)
+async def chat_with_mcp_tools(
     request: ChatRequest,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
-    conv_manager: ConversationManager = Depends(get_conversation_manager),
+    conv_manager: EnhancedConversationManager = Depends(get_enhanced_conversation_manager),
     memory_manager: MemoryManager = Depends(get_memory_manager),
     enhanced_memory: EnhancedMemoryManager = Depends(get_enhanced_memory_manager)
 ):
-    """Chat with full historical context from past conversations"""
+    """Enhanced chat endpoint with MCP tool integration"""
     start_time = time.time()
 
     try:
@@ -322,24 +278,74 @@ async def chat_with_history(
             request.message
         )
 
-        # Build conversation context WITH historical context enabled
-        context = await conv_manager.build_conversation_context(
+        # Build enhanced conversation context with MCP tools
+        context = await conv_manager.build_tool_enhanced_context(
             conversation.id,
             request.user_id,
             max_messages=settings.max_conversation_history,
             include_historical_context=True
         )
 
-        # Get LLM response
-        llm_response = await lmstudio_client.chat_completion(
-            messages=context,
-            temperature=request.temperature,
-            max_tokens=request.max_tokens,
-            stream=False
+        # Get available MCP tools for this request
+        available_tools = get_mcp_tools_for_assistant()
+
+        # Prepare LLM request with tools
+        llm_request_params = {
+            "messages": context,
+            "temperature": request.temperature,
+            "max_tokens": request.max_tokens,
+            "stream": False
+        }
+
+        # Add tools if available
+        if available_tools:
+            llm_request_params["tools"] = [
+                {
+                    "type": "function",
+                    "function": tool["function"]
+                } for tool in available_tools
+            ]
+            llm_request_params["tool_choice"] = "auto"
+
+        # Get initial LLM response
+        llm_response = await lmstudio_client.chat_completion(**llm_request_params)
+
+        # Process tool calls if present
+        processed_response = await conv_manager.process_llm_response_with_tools(
+            llm_response, conversation.id
         )
 
-        # Extract response content
-        response_content = llm_response["choices"][0]["message"]["content"]
+        # Handle follow-up if tool calls were made
+        final_response = llm_response
+        if processed_response.get("requires_followup"):
+            # Add tool results to context and get final response
+            tool_results = processed_response.get("tool_results", [])
+
+            # Build follow-up context - handle null content for tool calls
+            initial_message = llm_response["choices"][0]["message"]
+            followup_message = {
+                "role": "assistant",
+                "tool_calls": initial_message.get("tool_calls", []),
+                "content": initial_message.get("content", "")  # Always include content, default to empty string
+            }
+
+            followup_context = context + [followup_message] + tool_results
+
+            # Get final response incorporating tool results
+            final_response = await lmstudio_client.chat_completion(
+                messages=followup_context,
+                temperature=request.temperature,
+                max_tokens=request.max_tokens,
+                stream=False
+            )
+
+        # Extract response content safely
+        final_message = final_response["choices"][0]["message"]
+        response_content = final_message.get("content") or ""
+
+        # If final response still has no content but has tool calls, create a summary
+        if not response_content and final_message.get("tool_calls"):
+            response_content = "[Tool calls executed - see tool results above]"
 
         # Add assistant message
         processing_time = time.time() - start_time
@@ -351,12 +357,13 @@ async def chat_with_history(
                 "model_used": settings.lmstudio_model,
                 "temperature": request.temperature or settings.default_temperature,
                 "processing_time": processing_time,
-                "token_count": llm_response.get("usage", {}).get("total_tokens"),
-                "historical_context": True
+                "token_count": final_response.get("usage", {}).get("total_tokens"),
+                "mcp_tools_available": len(available_tools),
+                "tool_calls_made": len(processed_response.get("tool_results", []))
             }
         )
 
-        # Extract and store enhanced memories (background task)
+        # Background tasks
         background_tasks.add_task(
             extract_and_store_enhanced_memories,
             request.user_id,
@@ -374,7 +381,7 @@ async def chat_with_history(
                 conv_manager
             )
 
-        # Create conversation summary more frequently (every 3 messages after 5)
+        # Create conversation summary
         message_count = len(conv_manager.get_conversation_messages(conversation.id))
         if message_count >= 5 and message_count % 3 == 0:
             background_tasks.add_task(
@@ -387,128 +394,7 @@ async def chat_with_history(
             message=assistant_message,
             conversation_id=conversation.id,
             processing_time=processing_time,
-            token_count=llm_response.get("usage", {}).get("total_tokens")
-        )
-
-    except TimeoutException as e:
-        logger.error(f"LMStudio timeout error: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
-            detail="LMStudio is taking longer than expected to respond. This may be due to high processing load. Please wait a moment and try again."
-        )
-    except Exception as e:
-        logger.error(f"Chat error: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Chat processing failed: {str(e)}"
-        )
-
-
-# Chat endpoints
-@app.post("/chat", response_model=ChatResponse)
-async def chat(
-    request: ChatRequest,
-    background_tasks: BackgroundTasks,
-    db: Session = Depends(get_db),
-    conv_manager: ConversationManager = Depends(get_conversation_manager),
-    memory_manager: MemoryManager = Depends(get_memory_manager),
-    enhanced_memory: EnhancedMemoryManager = Depends(get_enhanced_memory_manager)
-):
-    """Send a chat message and get response"""
-    start_time = time.time()
-
-    try:
-        # Verify user exists
-        user = db.query(User).filter(User.id == request.user_id).first()
-        if not user:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="User not found"
-            )
-
-        # Get or create conversation
-        if request.conversation_id:
-            conversation = conv_manager.get_conversation(request.conversation_id, request.user_id)
-            if not conversation:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail="Conversation not found"
-                )
-        else:
-            conversation = conv_manager.create_conversation(request.user_id)
-
-        # Add user message
-        user_message = conv_manager.add_message(
-            conversation.id,
-            "user",
-            request.message
-        )
-
-        # Build conversation context WITH historical context enabled by default
-        context = await conv_manager.build_conversation_context(
-            conversation.id,
-            request.user_id,
-            max_messages=settings.max_conversation_history,
-            include_historical_context=True  # Always enabled now
-        )
-
-        # Get LLM response
-        llm_response = await lmstudio_client.chat_completion(
-            messages=context,
-            temperature=request.temperature,
-            max_tokens=request.max_tokens,
-            stream=False
-        )
-
-        # Extract response content
-        response_content = llm_response["choices"][0]["message"]["content"]
-
-        # Add assistant message
-        processing_time = time.time() - start_time
-        assistant_message = conv_manager.add_message(
-            conversation.id,
-            "assistant",
-            response_content,
-            metadata={
-                "model_used": settings.lmstudio_model,
-                "temperature": request.temperature or settings.default_temperature,
-                "processing_time": processing_time,
-                "token_count": llm_response.get("usage", {}).get("total_tokens")
-            }
-        )
-
-        # Extract and store enhanced memories (background task)
-        background_tasks.add_task(
-            extract_and_store_enhanced_memories,
-            request.user_id,
-            request.message,
-            response_content,
-            conversation.id,
-            enhanced_memory
-        )
-
-        # Auto-generate conversation title if it's the first exchange
-        if len(conv_manager.get_conversation_messages(conversation.id)) == 2:
-            background_tasks.add_task(
-                auto_generate_title,
-                conversation.id,
-                conv_manager
-            )
-
-        # Create conversation summary more frequently (every 3 messages after 5)
-        message_count = len(conv_manager.get_conversation_messages(conversation.id))
-        if message_count >= 5 and message_count % 3 == 0:
-            background_tasks.add_task(
-                create_conversation_summary_task,
-                conversation.id,
-                conv_manager
-            )
-
-        return ChatResponse(
-            message=assistant_message,
-            conversation_id=conversation.id,
-            processing_time=processing_time,
-            token_count=llm_response.get("usage", {}).get("total_tokens")
+            token_count=final_response.get("usage", {}).get("total_tokens")
         )
 
     except TimeoutException as e:
@@ -526,24 +412,25 @@ async def chat(
 
 
 @app.post("/chat/stream")
-async def chat_stream(
+async def chat_stream_with_mcp_tools(
     request: ChatRequest,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
-    conv_manager: ConversationManager = Depends(get_conversation_manager),
+    conv_manager: EnhancedConversationManager = Depends(get_enhanced_conversation_manager),
     memory_manager: MemoryManager = Depends(get_memory_manager),
     enhanced_memory: EnhancedMemoryManager = Depends(get_enhanced_memory_manager)
 ):
-    """Stream chat response"""
+    """Enhanced streaming chat endpoint with MCP tool integration"""
     if not request.stream:
         request.stream = True
 
     async def generate():
         start_time = time.time()
         full_response = ""
+        tool_calls_made = 0
 
         try:
-            # Verify user and get/create conversation (same as above)
+            # Verify user and get/create conversation
             user = db.query(User).filter(User.id == request.user_id).first()
             if not user:
                 yield f"data: {json.dumps({'error': 'User not found'})}\\n\\n"
@@ -564,33 +451,72 @@ async def chat_stream(
                 request.message
             )
 
-            # Build context WITH historical context enabled
-            context = await conv_manager.build_conversation_context(
+            # Build context with MCP tools
+            context = await conv_manager.build_tool_enhanced_context(
                 conversation.id,
                 request.user_id,
                 max_messages=settings.max_conversation_history,
-                include_historical_context=True  # Always enabled now
+                include_historical_context=True
             )
 
+            # Get available MCP tools
+            available_tools = get_mcp_tools_for_assistant()
+
+            # Prepare streaming request
+            stream_params = {
+                "messages": context,
+                "temperature": request.temperature,
+                "max_tokens": request.max_tokens,
+                "stream": True
+            }
+
+            # Add tools if available
+            if available_tools:
+                stream_params["tools"] = [
+                    {
+                        "type": "function", 
+                        "function": tool["function"]
+                    } for tool in available_tools
+                ]
+                stream_params["tool_choice"] = "auto"
+
             # Stream LLM response
-            async for chunk in lmstudio_client.chat_completion(
-                messages=context,
-                temperature=request.temperature,
-                max_tokens=request.max_tokens,
-                stream=True
-            ):
+            tool_calls = []
+
+            async for chunk in lmstudio_client.chat_completion(**stream_params):
                 if "choices" in chunk and len(chunk["choices"]) > 0:
                     delta = chunk["choices"][0].get("delta", {})
-                    if "content" in delta:
+
+                    # Handle regular content
+                    if "content" in delta and delta["content"]:
                         content = delta["content"]
                         full_response += content
 
                         response_data = {
                             "chunk": content,
                             "conversation_id": conversation.id,
-                            "finished": False
+                            "finished": False,
+                            "type": "content"
                         }
                         yield f"data: {json.dumps(response_data)}\\n\\n"
+
+                    # Handle tool calls
+                    if "tool_calls" in delta:
+                        for tool_call in delta["tool_calls"]:
+                            # Process tool call (this is a simplified version)
+                            # In a full implementation, you'd need to handle partial tool calls
+                            if tool_call.get("function", {}).get("name"):
+                                tool_name = tool_call["function"]["name"]
+                                if tool_name.startswith("mcp_"):
+                                    # Signal tool call to user
+                                    tool_data = {
+                                        "chunk": f"[Using tool: {tool_name}]",
+                                        "conversation_id": conversation.id,
+                                        "finished": False,
+                                        "type": "tool_call"
+                                    }
+                                    yield f"data: {json.dumps(tool_data)}\\n\\n"
+                                    tool_calls_made += 1
 
             # Send completion signal
             processing_time = time.time() - start_time
@@ -598,7 +524,8 @@ async def chat_stream(
                 "chunk": "",
                 "conversation_id": conversation.id,
                 "finished": True,
-                "processing_time": processing_time
+                "processing_time": processing_time,
+                "tool_calls_made": tool_calls_made
             }
             yield f"data: {json.dumps(completion_data)}\\n\\n"
 
@@ -610,11 +537,14 @@ async def chat_stream(
                 metadata={
                     "model_used": settings.lmstudio_model,
                     "temperature": request.temperature or settings.default_temperature,
-                    "processing_time": processing_time
+                    "processing_time": processing_time,
+                    "mcp_tools_available": len(available_tools),
+                    "tool_calls_made": tool_calls_made,
+                    "streaming": True
                 }
             )
 
-            # Background tasks for enhanced memory extraction
+            # Background tasks
             background_tasks.add_task(
                 extract_and_store_enhanced_memories,
                 request.user_id,
@@ -637,7 +567,58 @@ async def chat_stream(
     return StreamingResponse(generate(), media_type="text/plain")
 
 
-# Memory management endpoints
+# Search endpoints (unchanged from original)
+@app.get("/users/{user_id}/conversations/search")
+async def search_conversations(
+    user_id: int,
+    q: str,
+    limit: int = 5,
+    db: Session = Depends(get_db)
+):
+    """Search past conversations"""
+    try:
+        from search_manager import SearchManager
+        search_manager = SearchManager(db)
+
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="User not found"
+            )
+
+        results = await search_manager.search_conversations(user_id, q, limit)
+
+        formatted_results = []
+        for summary in results:
+            try:
+                formatted_results.append({
+                    "conversation_id": summary.conversation_id,
+                    "title": summary.conversation.title,
+                    "summary": summary.summary,
+                    "keywords": summary.keywords,
+                    "priority_score": getattr(summary, 'priority_score', 0.0),
+                    "created_at": summary.conversation.created_at,
+                    "updated_at": summary.conversation.updated_at
+                })
+            except Exception as e:
+                logger.warning(f"Could not format search result: {e}")
+                continue
+
+        return {
+            "query": q,
+            "results": formatted_results,
+            "total_found": len(formatted_results)
+        }
+    except Exception as e:
+        logger.error(f"Search conversations error: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Search failed: {str(e)}"
+        )
+
+
+# Memory management endpoints (unchanged)
 @app.post("/users/{user_id}/memory", response_model=UserMemorySchema)
 def add_user_memory(
     user_id: int,
@@ -662,96 +643,10 @@ def get_user_memory(
     return memory_manager.get_user_memories(user_id, memory_type, limit=limit)
 
 
-@app.delete("/users/{user_id}/memory/{memory_id}")
-def delete_user_memory(
-    user_id: int,
-    memory_id: int,
-    db: Session = Depends(get_db)
-):
-    """Delete a user memory entry"""
-    memory = db.query(UserMemory).filter(
-        UserMemory.id == memory_id,
-        UserMemory.user_id == user_id
-    ).first()
-
-    if not memory:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Memory entry not found"
-        )
-
-    db.delete(memory)
-    db.commit()
-    return {"message": "Memory deleted successfully"}
-
-
-@app.put("/users/{user_id}/memory/{memory_id}", response_model=UserMemorySchema)
-def update_user_memory(
-    user_id: int,
-    memory_id: int,
-    memory_update: UserMemoryCreate,
-    db: Session = Depends(get_db)
-):
-    """Update a user memory entry"""
-    memory = db.query(UserMemory).filter(
-        UserMemory.id == memory_id,
-        UserMemory.user_id == user_id
-    ).first()
-
-    if not memory:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Memory entry not found"
-        )
-
-    # Update memory fields
-    memory.memory_type = memory_update.memory_type
-    memory.key = memory_update.key
-    memory.value = memory_update.value
-    memory.confidence = memory_update.confidence
-    memory.source = memory_update.source
-    memory.updated_at = func.now()
-
-    db.commit()
-    db.refresh(memory)
-    return memory
-
-
-# Enhanced memory search endpoint
-@app.get("/users/{user_id}/memory/search")
-async def search_user_memories(
-    user_id: int,
-    q: str,
-    limit: int = 10,
-    db: Session = Depends(get_db),
-    enhanced_memory: EnhancedMemoryManager = Depends(get_enhanced_memory_manager)
-):
-    """Search user memories semantically"""
-    memories = await enhanced_memory.search_memories_semantic(user_id, q, limit)
-    
-    return {
-        "query": q,
-        "results": [
-            {
-                "id": m.id,
-                "key": m.key,
-                "value": m.value,
-                "confidence": m.confidence,
-                "memory_type": m.memory_type,
-                "source": m.source,
-                "created_at": m.created_at,
-                "access_count": m.access_count
-            }
-            for m in memories
-        ],
-        "total_found": len(memories)
-    }
-
-
-# System status endpoint
+# Enhanced system status with MCP information
 @app.get("/status", response_model=SystemStatus)
 async def get_system_status(db: Session = Depends(get_db)):
-    """Get system status"""
+    """Get enhanced system status including MCP information"""
     lmstudio_connected = await lmstudio_client.health_check()
 
     # Get database stats
@@ -760,33 +655,38 @@ async def get_system_status(db: Session = Depends(get_db)):
         Conversation.is_active == True
     ).scalar()
 
-    return SystemStatus(
-        status="healthy",
-        version=settings.api_version,
-        lmstudio_connected=lmstudio_connected,
-        database_connected=True,
-        active_conversations=active_conversations,
-        total_users=total_users
-    )
+    # Get MCP status
+    try:
+        from mcp_integration import mcp_manager
+        if mcp_manager:
+            mcp_status = mcp_manager.get_server_status()
+            mcp_connected_count = sum(1 for s in mcp_status.values() if s["status"] == "connected")
+            mcp_total_count = len(mcp_status)
+            mcp_tools_count = sum(s["tools_count"] for s in mcp_status.values())
+        else:
+            mcp_connected_count = 0
+            mcp_total_count = 0
+            mcp_tools_count = 0
+    except Exception as e:
+        logger.error(f"Failed to get MCP status: {e}")
+        mcp_connected_count = 0
+        mcp_total_count = 0
+        mcp_tools_count = 0
+
+    return {
+        "status": "healthy",
+        "version": settings.api_version,
+        "lmstudio_connected": lmstudio_connected,
+        "database_connected": True,
+        "active_conversations": active_conversations,
+        "total_users": total_users,
+        "mcp_servers_connected": mcp_connected_count,
+        "mcp_servers_total": mcp_total_count,
+        "mcp_tools_available": mcp_tools_count
+    }
 
 
 # Background task functions
-async def extract_and_store_memories(
-    user_id: int,
-    user_message: str,
-    assistant_response: str,
-    memory_manager: MemoryManager
-):
-    """Background task to extract and store implicit memories"""
-    try:
-        memories = memory_manager.extract_implicit_memory(user_id, user_message, assistant_response)
-        if memories:
-            memory_manager.store_memories(memories)
-            logger.info(f"Stored {len(memories)} implicit memories for user {user_id}")
-    except Exception as e:
-        logger.error(f"Failed to extract memories: {e}")
-
-
 async def extract_and_store_enhanced_memories(
     user_id: int,
     user_message: str,
@@ -805,12 +705,11 @@ async def extract_and_store_enhanced_memories(
         logger.error(f"Failed to extract enhanced memories: {e}")
 
 
-async def auto_generate_title(conversation_id: int, conv_manager: ConversationManager):
+async def auto_generate_title(conversation_id: int, conv_manager: EnhancedConversationManager):
     """Background task to auto-generate conversation title"""
     try:
         title = await conv_manager.generate_conversation_title(conversation_id)
         if title:
-            # Get conversation to find owner
             conversation = conv_manager.db.query(Conversation).filter(
                 Conversation.id == conversation_id
             ).first()
@@ -821,7 +720,7 @@ async def auto_generate_title(conversation_id: int, conv_manager: ConversationMa
         logger.error(f"Failed to generate conversation title: {e}")
 
 
-async def create_conversation_summary_task(conversation_id: int, conv_manager: ConversationManager):
+async def create_conversation_summary_task(conversation_id: int, conv_manager: EnhancedConversationManager):
     """Background task to create conversation summary"""
     try:
         summary = await conv_manager.create_conversation_summary(conversation_id)

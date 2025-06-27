@@ -158,6 +158,9 @@ export class ApiService {
     database_connected: boolean;
     active_conversations: number;
     total_users: number;
+    mcp_servers_connected?: number;
+    mcp_servers_total?: number;
+    mcp_tools_available?: number;
   }> {
     const response = await fetch(`${this.baseUrl}/status`);
 
@@ -165,6 +168,321 @@ export class ApiService {
       throw new Error('Failed to get system status');
     }
 
+    return response.json();
+  }
+
+  // MCP-related methods
+  async getMCPStatus(): Promise<{
+    success: boolean;
+    data: {
+      servers: Record<string, {
+        name: string;
+        type: string;
+        enabled: boolean;
+        status: string;
+        error?: string;
+        tools_count: number;
+        resources_count: number;
+        prompts_count: number;
+      }>;
+      total_servers: number;
+      connected_servers: number;
+    };
+  }> {
+    const response = await fetch(`${this.baseUrl}/mcp/status`);
+    
+    if (!response.ok) {
+      throw new Error('Failed to get MCP status');
+    }
+    
+    return response.json();
+  }
+
+  async listMCPServers(): Promise<{
+    success: boolean;
+    data: {
+      servers: Array<{
+        server_id: string;
+        name: string;
+        description?: string;
+        type: string;
+        enabled: boolean;
+        status: string;
+        error?: string;
+        capabilities: {
+          tools: number;
+          resources: number;
+          prompts: number;
+        };
+      }>;
+    };
+  }> {
+    const response = await fetch(`${this.baseUrl}/mcp/servers`);
+    
+    if (!response.ok) {
+      throw new Error('Failed to list MCP servers');
+    }
+    
+    return response.json();
+  }
+
+  async addMCPServer(config: {
+    server_id: string;
+    name: string;
+    description?: string;
+    type: 'stdio' | 'http' | 'websocket';
+    command?: string;
+    args?: string[];
+    url?: string;
+    env?: Record<string, string>;
+    timeout?: number;
+    enabled?: boolean;
+    auto_reconnect?: boolean;
+  }): Promise<{
+    success: boolean;
+    data: { message: string };
+  }> {
+    const response = await fetch(`${this.baseUrl}/mcp/servers`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(config)
+    });
+    
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.detail || 'Failed to add MCP server');
+    }
+    
+    return response.json();
+  }
+
+  async updateMCPServer(serverId: string, config: {
+    server_id: string;
+    name: string;
+    description?: string;
+    type: 'stdio' | 'http' | 'websocket';
+    command?: string;
+    args?: string[];
+    url?: string;
+    env?: Record<string, string>;
+    timeout?: number;
+    enabled?: boolean;
+    auto_reconnect?: boolean;
+  }): Promise<{
+    success: boolean;
+    data: { message: string };
+  }> {
+    const response = await fetch(`${this.baseUrl}/mcp/servers/${serverId}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(config)
+    });
+    
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.detail || 'Failed to update MCP server');
+    }
+    
+    return response.json();
+  }
+
+  async deleteMCPServer(serverId: string): Promise<{
+    success: boolean;
+    data: { message: string };
+  }> {
+    const response = await fetch(`${this.baseUrl}/mcp/servers/${serverId}`, {
+      method: 'DELETE'
+    });
+    
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.detail || 'Failed to delete MCP server');
+    }
+    
+    return response.json();
+  }
+
+  async connectMCPServer(serverId: string): Promise<{
+    success: boolean;
+    data: { message: string };
+  }> {
+    const response = await fetch(`${this.baseUrl}/mcp/servers/${serverId}/connect`, {
+      method: 'POST'
+    });
+    
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.detail || 'Failed to connect to MCP server');
+    }
+    
+    return response.json();
+  }
+
+  async disconnectMCPServer(serverId: string): Promise<{
+    success: boolean;
+    data: { message: string };
+  }> {
+    const response = await fetch(`${this.baseUrl}/mcp/servers/${serverId}/disconnect`, {
+      method: 'POST'
+    });
+    
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.detail || 'Failed to disconnect from MCP server');
+    }
+    
+    return response.json();
+  }
+
+  async listMCPTools(): Promise<{
+    success: boolean;
+    data: {
+      tools: Array<{
+        name: string;
+        description: string;
+        input_schema: any;
+        server_id: string;
+      }>;
+      total_count: number;
+    };
+  }> {
+    const response = await fetch(`${this.baseUrl}/mcp/tools`);
+    
+    if (!response.ok) {
+      throw new Error('Failed to list MCP tools');
+    }
+    
+    return response.json();
+  }
+
+  async callMCPTool(toolName: string, toolArgs: any, serverId?: string): Promise<{
+    success: boolean;
+    data: any;
+  }> {
+    const response = await fetch(`${this.baseUrl}/mcp/tools/call`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        tool_name: toolName,
+        arguments: toolArgs,
+        server_id: serverId
+      })
+    });
+    
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.detail || 'Failed to call MCP tool');
+    }
+    
+    return response.json();
+  }
+
+  async listMCPResources(): Promise<{
+    success: boolean;
+    data: {
+      resources: Array<{
+        uri: string;
+        name: string;
+        description?: string;
+        mime_type?: string;
+        server_id: string;
+      }>;
+      total_count: number;
+    };
+  }> {
+    const response = await fetch(`${this.baseUrl}/mcp/resources`);
+    
+    if (!response.ok) {
+      throw new Error('Failed to list MCP resources');
+    }
+    
+    return response.json();
+  }
+
+  async readMCPResource(uri: string, serverId?: string): Promise<{
+    success: boolean;
+    data: any;
+  }> {
+    const response = await fetch(`${this.baseUrl}/mcp/resources/read`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        uri,
+        server_id: serverId
+      })
+    });
+    
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.detail || 'Failed to read MCP resource');
+    }
+    
+    return response.json();
+  }
+
+  async listMCPPrompts(): Promise<{
+    success: boolean;
+    data: {
+      prompts: Array<{
+        name: string;
+        description: string;
+        arguments: any[];
+        server_id: string;
+      }>;
+      total_count: number;
+    };
+  }> {
+    const response = await fetch(`${this.baseUrl}/mcp/prompts`);
+    
+    if (!response.ok) {
+      throw new Error('Failed to list MCP prompts');
+    }
+    
+    return response.json();
+  }
+
+  async getMCPPrompt(name: string, promptArgs?: any, serverId?: string): Promise<{
+    success: boolean;
+    data: any;
+  }> {
+    const response = await fetch(`${this.baseUrl}/mcp/prompts/get`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name,
+        arguments: promptArgs,
+        server_id: serverId
+      })
+    });
+    
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.detail || 'Failed to get MCP prompt');
+    }
+    
+    return response.json();
+  }
+
+  async getToolAnalytics(conversationId: number, userId: number): Promise<{
+    success: boolean;
+    data: {
+      total_tool_calls: number;
+      tools_used: Record<string, number>;
+      success_rate: number;
+      most_used_tool?: string;
+      tool_timeline: Array<{
+        tool_name: string;
+        timestamp: string;
+        success: boolean;
+      }>;
+    };
+  }> {
+    const response = await fetch(`${this.baseUrl}/conversations/${conversationId}/tools/analytics?user_id=${userId}`);
+    
+    if (!response.ok) {
+      throw new Error('Failed to get tool analytics');
+    }
+    
     return response.json();
   }
 }
