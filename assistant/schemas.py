@@ -34,7 +34,7 @@ class User(UserBase):
     id: int
     created_at: datetime
     updated_at: datetime
-    
+
     class Config:
         from_attributes = True
 
@@ -54,10 +54,10 @@ class Message(MessageBase):
     conversation_id: int
     timestamp: datetime
     token_count: Optional[int] = None
-    model_used: Optional[str] = None
+    llm_model: Optional[str] = None
     temperature: Optional[float] = None
     processing_time: Optional[float] = None
-    
+
     class Config:
         from_attributes = True
 
@@ -78,7 +78,7 @@ class Conversation(ConversationBase):
     updated_at: datetime
     is_active: bool = True
     messages: List[Message] = []
-    
+
     class Config:
         from_attributes = True
 
@@ -103,7 +103,7 @@ class UserMemory(UserMemoryBase):
     updated_at: datetime
     last_accessed: datetime
     access_count: int
-    
+
     class Config:
         from_attributes = True
 
@@ -124,7 +124,7 @@ class UserPreference(UserPreferenceBase):
     user_id: int
     created_at: datetime
     updated_at: datetime
-    
+
     class Config:
         from_attributes = True
 
@@ -184,6 +184,6 @@ class ConversationSummary(BaseModel):
     summary: str
     message_count: int
     created_at: datetime
-    
+
     class Config:
         from_attributes = True

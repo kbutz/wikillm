@@ -38,10 +38,12 @@ class Conversation(Base):
     created_at = Column(DateTime, default=func.now())
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
     is_active = Column(Boolean, default=True)
+    topic_tags = Column(JSON, nullable=True)  # For topic categorization
 
     # Relationships
     user = relationship("User", back_populates="conversations")
     messages = relationship("Message", back_populates="conversation", cascade="all, delete-orphan")
+    summary = relationship("ConversationSummary", back_populates="conversation", uselist=False)
 
 
 class Message(Base):
@@ -56,7 +58,7 @@ class Message(Base):
 
     # Optional metadata
     token_count = Column(Integer, nullable=True)
-    model_used = Column(String(100), nullable=True)
+    llm_model = Column(String(100), nullable=True)
     temperature = Column(Float, nullable=True)
     processing_time = Column(Float, nullable=True)  # seconds
 
@@ -101,17 +103,20 @@ class UserPreference(Base):
 
 
 class ConversationSummary(Base):
-    """Conversation summaries for memory efficiency"""
+    """Conversation summaries for memory efficiency and search"""
     __tablename__ = "conversation_summaries"
 
     id = Column(Integer, primary_key=True, index=True)
-    conversation_id = Column(Integer, ForeignKey("conversations.id"), nullable=False)
+    conversation_id = Column(Integer, ForeignKey("conversations.id"), nullable=False, unique=True)
     summary = Column(Text, nullable=False)
+    keywords = Column(Text, nullable=True)  # Comma-separated keywords for search
     message_count = Column(Integer, nullable=False)
+    priority_score = Column(Float, default=0.0)  # For ranking important conversations
     created_at = Column(DateTime, default=func.now())
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
 
     # Relationships
-    conversation = relationship("Conversation")
+    conversation = relationship("Conversation", back_populates="summary")
 
 
 class SystemLog(Base):

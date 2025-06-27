@@ -14,7 +14,7 @@ export interface Message {
   timestamp: string;
   processing_time?: number;
   token_count?: number;
-  model_used?: string;
+  llm_model?: string;
   temperature?: number;
 }
 

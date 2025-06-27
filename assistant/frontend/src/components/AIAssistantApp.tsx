@@ -117,9 +117,34 @@ export default function AIAssistantApp() {
   };
 
   // Select conversation
-  const selectConversation = (conversation: Conversation) => {
-    setActiveConversation(conversation);
-    setMessages(conversation.messages || []);
+  const selectConversation = async (conversation: Conversation) => {
+    if (currentUser) {
+      try {
+        // Refresh conversations list from backend to ensure we have the latest data
+        const updatedConvs = await api.getUserConversations(currentUser.id);
+        setConversations(updatedConvs);
+
+        // Find the selected conversation in the updated list
+        const updatedConversation = updatedConvs.find(c => c.id === conversation.id);
+        if (updatedConversation) {
+          setActiveConversation(updatedConversation);
+          setMessages(updatedConversation.messages || []);
+        } else {
+          // Fallback to the provided conversation if not found in updated list
+          setActiveConversation(conversation);
+          setMessages(conversation.messages || []);
+        }
+      } catch (error) {
+        console.error('Failed to refresh conversations:', error);
+        // Fallback to the provided conversation if refresh fails
+        setActiveConversation(conversation);
+        setMessages(conversation.messages || []);
+      }
+    } else {
+      // If no user, just use the provided conversation
+      setActiveConversation(conversation);
+      setMessages(conversation.messages || []);
+    }
   };
 
   // Delete conversation

@@ -5,7 +5,7 @@ import logging
 import time
 import json
 from contextlib import asynccontextmanager
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Tuple
 from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -192,6 +192,211 @@ def delete_conversation(
     return {"message": "Conversation deleted successfully"}
 
 
+# Search endpoints
+@app.get("/users/{user_id}/conversations/search")
+async def search_conversations(
+    user_id: int,
+    q: str,
+    limit: int = 5,
+    db: Session = Depends(get_db)
+):
+    """Search past conversations"""
+    try:
+        from search_manager import SearchManager
+        search_manager = SearchManager(db)
+        
+        # Verify user exists
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="User not found"
+            )
+        
+        results = await search_manager.search_conversations(user_id, q, limit)
+        
+        # Format results for API response
+        formatted_results = []
+        for summary in results:
+            try:
+                formatted_results.append({
+                    "conversation_id": summary.conversation_id,
+                    "title": summary.conversation.title,
+                    "summary": summary.summary,
+                    "keywords": summary.keywords,
+                    "priority_score": getattr(summary, 'priority_score', 0.0),
+                    "created_at": summary.conversation.created_at,
+                    "updated_at": summary.conversation.updated_at
+                })
+            except Exception as e:
+                logger.warning(f"Could not format search result: {e}")
+                continue
+        
+        return {
+            "query": q,
+            "results": formatted_results,
+            "total_found": len(formatted_results)
+        }
+    except Exception as e:
+        logger.error(f"Search conversations error: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Search failed: {str(e)}"
+        )
+
+
+@app.get("/users/{user_id}/priorities")
+async def get_user_priorities(
+    user_id: int,
+    db: Session = Depends(get_db)
+):
+    """Extract priorities from conversation history"""
+    try:
+        from search_manager import SearchManager
+        search_manager = SearchManager(db)
+        
+        # Verify user exists
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="User not found"
+            )
+        
+        priorities = await search_manager.get_user_priorities(user_id)
+        
+        return {
+            "user_id": user_id,
+            "extracted_at": datetime.now().isoformat(),
+            "priorities": priorities
+        }
+    except Exception as e:
+        logger.error(f"Get priorities error: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Priority extraction failed: {str(e)}"
+        )
+
+
+@app.post("/chat/with-history", response_model=ChatResponse)
+async def chat_with_history(
+    request: ChatRequest,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    conv_manager: ConversationManager = Depends(get_conversation_manager),
+    memory_manager: MemoryManager = Depends(get_memory_manager)
+):
+    """Chat with full historical context from past conversations"""
+    start_time = time.time()
+
+    try:
+        # Verify user exists
+        user = db.query(User).filter(User.id == request.user_id).first()
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="User not found"
+            )
+
+        # Get or create conversation
+        if request.conversation_id:
+            conversation = conv_manager.get_conversation(request.conversation_id, request.user_id)
+            if not conversation:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Conversation not found"
+                )
+        else:
+            conversation = conv_manager.create_conversation(request.user_id)
+
+        # Add user message
+        user_message = conv_manager.add_message(
+            conversation.id,
+            "user",
+            request.message
+        )
+
+        # Build conversation context WITH historical context enabled
+        context = await conv_manager.build_conversation_context(
+            conversation.id,
+            request.user_id,
+            max_messages=settings.max_conversation_history,
+            include_historical_context=True
+        )
+
+        # Get LLM response
+        llm_response = await lmstudio_client.chat_completion(
+            messages=context,
+            temperature=request.temperature,
+            max_tokens=request.max_tokens,
+            stream=False
+        )
+
+        # Extract response content
+        response_content = llm_response["choices"][0]["message"]["content"]
+
+        # Add assistant message
+        processing_time = time.time() - start_time
+        assistant_message = conv_manager.add_message(
+            conversation.id,
+            "assistant",
+            response_content,
+            metadata={
+                "model_used": settings.lmstudio_model,
+                "temperature": request.temperature or settings.default_temperature,
+                "processing_time": processing_time,
+                "token_count": llm_response.get("usage", {}).get("total_tokens"),
+                "historical_context": True
+            }
+        )
+
+        # Extract and store implicit memories (background task)
+        background_tasks.add_task(
+            extract_and_store_memories,
+            request.user_id,
+            request.message,
+            response_content,
+            memory_manager
+        )
+
+        # Auto-generate conversation title if it's the first exchange
+        if len(conv_manager.get_conversation_messages(conversation.id)) == 2:
+            background_tasks.add_task(
+                auto_generate_title,
+                conversation.id,
+                conv_manager
+            )
+
+        # Schedule conversation summarization if needed
+        message_count = len(conv_manager.get_conversation_messages(conversation.id))
+        if message_count >= 10 and message_count % 5 == 0:  # Every 5 messages after 10
+            background_tasks.add_task(
+                create_conversation_summary_task,
+                conversation.id,
+                conv_manager
+            )
+
+        return ChatResponse(
+            message=assistant_message,
+            conversation_id=conversation.id,
+            processing_time=processing_time,
+            token_count=llm_response.get("usage", {}).get("total_tokens")
+        )
+
+    except TimeoutException as e:
+        logger.error(f"LMStudio timeout error: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            detail="LMStudio is taking longer than expected to respond. This may be due to high processing load. Please wait a moment and try again."
+        )
+    except Exception as e:
+        logger.error(f"Chat error: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Chat processing failed: {str(e)}"
+        )
+
+
 # Chat endpoints
 @app.post("/chat", response_model=ChatResponse)
 async def chat(
@@ -231,11 +436,12 @@ async def chat(
             request.message
         )
 
-        # Build conversation context
-        context = conv_manager.build_conversation_context(
+        # Build conversation context (without historical context for regular chat)
+        context = await conv_manager.build_conversation_context(
             conversation.id,
             request.user_id,
-            max_messages=settings.max_conversation_history
+            max_messages=settings.max_conversation_history,
+            include_historical_context=False
         )
 
         # Get LLM response
@@ -339,11 +545,12 @@ async def chat_stream(
                 request.message
             )
 
-            # Build context
-            context = conv_manager.build_conversation_context(
+            # Build context (without historical context for streaming)
+            context = await conv_manager.build_conversation_context(
                 conversation.id,
                 request.user_id,
-                max_messages=settings.max_conversation_history
+                max_messages=settings.max_conversation_history,
+                include_historical_context=False
             )
 
             # Stream LLM response
@@ -543,6 +750,16 @@ async def auto_generate_title(conversation_id: int, conv_manager: ConversationMa
                 logger.info(f"Auto-generated title for conversation {conversation_id}: {title}")
     except Exception as e:
         logger.error(f"Failed to generate conversation title: {e}")
+
+
+async def create_conversation_summary_task(conversation_id: int, conv_manager: ConversationManager):
+    """Background task to create conversation summary"""
+    try:
+        summary = await conv_manager.create_conversation_summary(conversation_id)
+        if summary:
+            logger.info(f"Created summary for conversation {conversation_id}")
+    except Exception as e:
+        logger.error(f"Failed to create conversation summary: {e}")
 
 
 # Health check endpoint

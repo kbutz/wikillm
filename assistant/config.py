@@ -24,6 +24,12 @@ class Settings(BaseSettings):
     max_conversation_history: int = 50
     max_user_memory_entries: int = 100
     memory_consolidation_threshold: int = 10
+    
+    # Search Settings
+    enable_cross_conversation_search: bool = True
+    auto_summarize_after_messages: int = 10
+    max_search_results: int = 10
+    priority_conversation_threshold: float = 0.3
 
     # Response Settings
     default_temperature: float = 0.7

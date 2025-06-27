@@ -1,11 +1,12 @@
 """
-Conversation Management Service
+Conversation Management Service - Fixed Version
 """
 import logging
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Tuple
 from sqlalchemy.orm import Session
 from sqlalchemy import desc, and_
 from datetime import datetime, timedelta
+from collections import Counter
 from models import Conversation, Message, User, ConversationSummary
 from schemas import ConversationCreate, MessageCreate, MessageRole
 from memory_manager import MemoryManager
@@ -75,7 +76,7 @@ class ConversationManager:
         # Add metadata if provided
         if metadata:
             message.token_count = metadata.get("token_count")
-            message.model_used = metadata.get("model_used")
+            message.llm_model = metadata.get("model_used")
             message.temperature = metadata.get("temperature")
             message.processing_time = metadata.get("processing_time")
 
@@ -119,32 +120,69 @@ class ConversationManager:
             Message.conversation_id == conversation_id
         ).order_by(desc(Message.timestamp)).limit(max_messages).all()[::-1]  # Reverse to chronological order
 
-    def build_conversation_context(
+    async def build_conversation_context(
         self,
         conversation_id: int,
         user_id: int,
-        max_messages: int = 20
+        max_messages: int = 20,
+        include_historical_context: bool = True
     ) -> List[Dict[str, str]]:
-        """Build conversation context for LLM"""
+        """Build conversation context for LLM with historical context"""
         # Get user memory context
         memory_context = self.memory_manager.get_memory_context(user_id)
 
         # Get recent messages
         messages = self.get_recent_messages(conversation_id, max_messages)
 
+        # Get historical context if enabled
+        historical_context = ""
+        if include_historical_context and messages:
+            try:
+                from search_manager import SearchManager
+                search_manager = SearchManager(self.db)
+                
+                # Get the most recent user message for context
+                current_message = ""
+                for msg in reversed(messages):
+                    if msg.role == MessageRole.USER:
+                        current_message = msg.content
+                        break
+                
+                if current_message:
+                    related_conversations = await search_manager.get_related_conversations(
+                        user_id, current_message, limit=3
+                    )
+                    
+                    if related_conversations:
+                        historical_parts = []
+                        for conv_summary in related_conversations:
+                            if conv_summary.conversation_id != conversation_id:
+                                historical_parts.append(
+                                    f"• {conv_summary.conversation.title}: {conv_summary.summary[:200]}..."
+                                )
+                        
+                        if historical_parts:
+                            historical_context = f"\n\nBased on previous conversations:\n{chr(10).join(historical_parts[:3])}"
+            except Exception as e:
+                logger.warning(f"Could not get historical context: {e}")
+                historical_context = ""
+
         # Build context array
         context = []
 
-        # Add system context with user memory
+        # Add system context with user memory and historical context
+        system_parts = ["You are a helpful AI assistant."]
+
         if memory_context:
-            system_message = f"""You are a helpful AI assistant. Here's what you know about the user:
+            system_parts.append(f"Here's what you know about the user:\n{memory_context}")
 
-{memory_context}
+        if historical_context:
+            system_parts.append(historical_context)
 
-Please use this information to provide personalized and relevant responses. Be natural and don't explicitly mention that you're using stored information unless relevant to the conversation."""
-            context.append({"role": "system", "content": system_message})
-        else:
-            context.append({"role": "system", "content": "You are a helpful AI assistant."})
+        if len(system_parts) > 1:
+            system_parts.append("\nUse this information to provide personalized and relevant responses. Be natural and reference previous discussions when helpful.")
+
+        context.append({"role": "system", "content": "\n\n".join(system_parts)})
 
         # Add conversation messages
         for message in messages:
@@ -223,8 +261,8 @@ Please use this information to provide personalized and relevant responses. Be n
             logger.error(f"Failed to generate conversation title: {e}")
             return None
 
-    def create_conversation_summary(self, conversation_id: int) -> Optional[ConversationSummary]:
-        """Create a summary of the conversation"""
+    async def create_conversation_summary(self, conversation_id: int) -> Optional[ConversationSummary]:
+        """Create a semantic summary of the conversation using LLM"""
         messages = self.get_conversation_messages(conversation_id)
 
         if len(messages) < 5:  # Not enough messages to summarize
@@ -238,29 +276,119 @@ Please use this information to provide personalized and relevant responses. Be n
         if existing_summary and existing_summary.message_count >= len(messages):
             return existing_summary  # Summary is up to date
 
-        # Create summary content
-        summary_text = self._generate_summary_text(messages)
+        # Generate semantic summary and keywords
+        summary_text, keywords = await self._generate_summary_text(messages)
+
+        # Calculate priority score
+        try:
+            from search_manager import SearchManager
+            search_manager = SearchManager(self.db)
+            priority_score = search_manager.calculate_conversation_priority(conversation_id)
+        except Exception as e:
+            logger.warning(f"Could not calculate priority score: {e}")
+            priority_score = 0.5  # Default priority
 
         if existing_summary:
             existing_summary.summary = summary_text
+            existing_summary.keywords = keywords
             existing_summary.message_count = len(messages)
-            existing_summary.created_at = datetime.now()
+            existing_summary.priority_score = priority_score
+            existing_summary.updated_at = datetime.now()
             self.db.commit()
             return existing_summary
         else:
             summary = ConversationSummary(
                 conversation_id=conversation_id,
                 summary=summary_text,
-                message_count=len(messages)
+                keywords=keywords,
+                message_count=len(messages),
+                priority_score=priority_score
             )
             self.db.add(summary)
             self.db.commit()
             self.db.refresh(summary)
             return summary
 
-    def _generate_summary_text(self, messages: List[Message]) -> str:
-        """Generate summary text from messages"""
-        # Simple extractive summary - take key points
+    async def _generate_summary_text(self, messages: List[Message]) -> Tuple[str, str]:
+        """Generate semantic summary and keywords using LLM"""
+        try:
+            # Prepare conversation text for summarization
+            conversation_text = self._prepare_conversation_for_summary(messages)
+
+            # Generate summary using LLM
+            summary_context = [
+                {
+                    "role": "system",
+                    "content": """Create a concise, searchable summary of this conversation. Focus on:
+1. Main topics discussed
+2. Key questions asked
+3. Important information shared
+4. Any decisions made or plans discussed
+5. Problems solved or issues addressed
+
+Keep the summary under 200 words and make it useful for future reference."""
+                },
+                {
+                    "role": "user",
+                    "content": f"Summarize this conversation:\n\n{conversation_text}"
+                }
+            ]
+
+            summary_response = await lmstudio_client.chat_completion(
+                messages=summary_context,
+                temperature=0.3,
+                max_tokens=200
+            )
+
+            summary = summary_response["choices"][0]["message"]["content"].strip()
+
+            # Generate keywords
+            keywords_context = [
+                {
+                    "role": "system",
+                    "content": "Extract 10-15 searchable keywords from this conversation summary. Return as comma-separated list. Include topics, concepts, actions, and important terms."
+                },
+                {
+                    "role": "user",
+                    "content": f"Extract keywords from: {summary}"
+                }
+            ]
+
+            keywords_response = await lmstudio_client.chat_completion(
+                messages=keywords_context,
+                temperature=0.1,
+                max_tokens=100
+            )
+
+            keywords = keywords_response["choices"][0]["message"]["content"].strip()
+
+            return summary, keywords
+
+        except Exception as e:
+            logger.error(f"LLM summary generation failed: {e}")
+            # Fallback to simple summary
+            return self._generate_simple_summary(messages), self._extract_simple_keywords(messages)
+
+    def _prepare_conversation_for_summary(self, messages: List[Message]) -> str:
+        """Prepare conversation text for LLM summarization"""
+        # Get user and assistant messages only (skip system)
+        relevant_messages = [msg for msg in messages if msg.role in [MessageRole.USER, MessageRole.ASSISTANT]]
+
+        # Limit to last 20 messages for context
+        if len(relevant_messages) > 20:
+            relevant_messages = relevant_messages[-20:]
+
+        conversation_parts = []
+        for msg in relevant_messages:
+            role_label = "User" if msg.role == MessageRole.USER else "Assistant"
+            # Truncate very long messages
+            content = msg.content[:500] + "..." if len(msg.content) > 500 else msg.content
+            conversation_parts.append(f"{role_label}: {content}")
+
+        return "\n\n".join(conversation_parts)
+
+    def _generate_simple_summary(self, messages: List[Message]) -> str:
+        """Generate simple summary as fallback"""
         summary_parts = []
 
         user_messages = [msg for msg in messages if msg.role == MessageRole.USER]
@@ -283,7 +411,28 @@ Please use this information to provide personalized and relevant responses. Be n
 
         return " | ".join(summary_parts)
 
-    def cleanup_old_conversations(self, user_id: int, days_old: int = 30):
+    def _extract_simple_keywords(self, messages: List[Message]) -> str:
+        """Extract simple keywords as fallback"""
+        import re
+
+        # Combine all message content
+        all_text = " ".join([msg.content for msg in messages if msg.role == MessageRole.USER])
+
+        # Extract words (3+ characters)
+        words = re.findall(r'\b[a-zA-Z]{3,}\b', all_text.lower())
+
+        # Remove common stop words
+        stop_words = {'the', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'this', 'that', 'are', 'is', 'was', 'were', 'have', 'has', 'had', 'will', 'would', 'could', 'should', 'can', 'could', 'may', 'might', 'must', 'shall', 'should', 'will', 'would'}
+
+        keywords = [word for word in words if word not in stop_words]
+
+        # Get most frequent keywords
+        word_counts = Counter(keywords)
+        top_keywords = [word for word, count in word_counts.most_common(15)]
+
+        return ", ".join(top_keywords)
+
+    async def cleanup_old_conversations(self, user_id: int, days_old: int = 30):
         """Clean up old inactive conversations"""
         cutoff_date = datetime.now() - timedelta(days=days_old)
 
@@ -297,7 +446,10 @@ Please use this information to provide personalized and relevant responses. Be n
 
         for conversation in old_conversations:
             # Create summary before deactivating
-            self.create_conversation_summary(conversation.id)
+            try:
+                await self.create_conversation_summary(conversation.id)
+            except Exception as e:
+                logger.warning(f"Could not create summary for conversation {conversation.id}: {e}")
             conversation.is_active = False
 
         if old_conversations:
