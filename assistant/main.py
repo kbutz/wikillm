@@ -226,10 +226,10 @@ async def get_conversation_tool_analytics(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Conversation not found"
             )
-        
+
         analytics = await conv_manager.get_tool_usage_analytics(conversation_id)
         return {"success": True, "data": analytics}
-        
+
     except Exception as e:
         logger.error(f"Failed to get tool analytics: {e}")
         raise HTTPException(
@@ -320,18 +320,15 @@ async def chat_with_mcp_tools(
         if processed_response.get("requires_followup"):
             # Add tool results to context and get final response
             tool_results = processed_response.get("tool_results", [])
-            
+
             # Build follow-up context - handle null content for tool calls
             initial_message = llm_response["choices"][0]["message"]
             followup_message = {
                 "role": "assistant",
-                "tool_calls": initial_message.get("tool_calls", [])
+                "tool_calls": initial_message.get("tool_calls", []),
+                "content": initial_message.get("content", "")  # Always include content, default to empty string
             }
-            
-            # Only add content if it exists and is not null
-            if initial_message.get("content"):
-                followup_message["content"] = initial_message["content"]
-            
+
             followup_context = context + [followup_message] + tool_results
 
             # Get final response incorporating tool results
@@ -345,7 +342,7 @@ async def chat_with_mcp_tools(
         # Extract response content safely
         final_message = final_response["choices"][0]["message"]
         response_content = final_message.get("content") or ""
-        
+
         # If final response still has no content but has tool calls, create a summary
         if not response_content and final_message.get("tool_calls"):
             response_content = "[Tool calls executed - see tool results above]"
@@ -464,7 +461,7 @@ async def chat_stream_with_mcp_tools(
 
             # Get available MCP tools
             available_tools = get_mcp_tools_for_assistant()
-            
+
             # Prepare streaming request
             stream_params = {
                 "messages": context,
@@ -485,11 +482,11 @@ async def chat_stream_with_mcp_tools(
 
             # Stream LLM response
             tool_calls = []
-            
+
             async for chunk in lmstudio_client.chat_completion(**stream_params):
                 if "choices" in chunk and len(chunk["choices"]) > 0:
                     delta = chunk["choices"][0].get("delta", {})
-                    
+
                     # Handle regular content
                     if "content" in delta and delta["content"]:
                         content = delta["content"]
@@ -502,7 +499,7 @@ async def chat_stream_with_mcp_tools(
                             "type": "content"
                         }
                         yield f"data: {json.dumps(response_data)}\\n\\n"
-                    
+
                     # Handle tool calls
                     if "tool_calls" in delta:
                         for tool_call in delta["tool_calls"]:
@@ -582,16 +579,16 @@ async def search_conversations(
     try:
         from search_manager import SearchManager
         search_manager = SearchManager(db)
-        
+
         user = db.query(User).filter(User.id == user_id).first()
         if not user:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="User not found"
             )
-        
+
         results = await search_manager.search_conversations(user_id, q, limit)
-        
+
         formatted_results = []
         for summary in results:
             try:
@@ -607,7 +604,7 @@ async def search_conversations(
             except Exception as e:
                 logger.warning(f"Could not format search result: {e}")
                 continue
-        
+
         return {
             "query": q,
             "results": formatted_results,
