@@ -27,7 +27,7 @@ class Settings(BaseSettings):
     
     # Search Settings
     enable_cross_conversation_search: bool = True
-    auto_summarize_after_messages: int = 10
+    auto_summarize_after_messages: int = 5  # Reduced from 10 for more frequent summaries
     max_search_results: int = 10
     priority_conversation_threshold: float = 0.3
 

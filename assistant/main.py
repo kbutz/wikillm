@@ -12,6 +12,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from httpx import TimeoutException
+from datetime import datetime
 
 # Local imports
 from config import settings
@@ -26,7 +27,7 @@ from schemas import (
     SystemStatus, ErrorResponse, MemoryType
 )
 from lmstudio_client import lmstudio_client
-from memory_manager import MemoryManager
+from memory_manager import MemoryManager, EnhancedMemoryManager
 from conversation_manager import ConversationManager
 
 # Configure logging
@@ -86,6 +87,10 @@ def get_conversation_manager(db: Session = Depends(get_db)) -> ConversationManag
 
 def get_memory_manager(db: Session = Depends(get_db)) -> MemoryManager:
     return MemoryManager(db)
+
+
+def get_enhanced_memory_manager(db: Session = Depends(get_db)) -> EnhancedMemoryManager:
+    return EnhancedMemoryManager(db)
 
 
 # User management endpoints
@@ -284,7 +289,8 @@ async def chat_with_history(
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     conv_manager: ConversationManager = Depends(get_conversation_manager),
-    memory_manager: MemoryManager = Depends(get_memory_manager)
+    memory_manager: MemoryManager = Depends(get_memory_manager),
+    enhanced_memory: EnhancedMemoryManager = Depends(get_enhanced_memory_manager)
 ):
     """Chat with full historical context from past conversations"""
     start_time = time.time()
@@ -350,13 +356,14 @@ async def chat_with_history(
             }
         )
 
-        # Extract and store implicit memories (background task)
+        # Extract and store enhanced memories (background task)
         background_tasks.add_task(
-            extract_and_store_memories,
+            extract_and_store_enhanced_memories,
             request.user_id,
             request.message,
             response_content,
-            memory_manager
+            conversation.id,
+            enhanced_memory
         )
 
         # Auto-generate conversation title if it's the first exchange
@@ -367,9 +374,9 @@ async def chat_with_history(
                 conv_manager
             )
 
-        # Schedule conversation summarization if needed
+        # Create conversation summary more frequently (every 3 messages after 5)
         message_count = len(conv_manager.get_conversation_messages(conversation.id))
-        if message_count >= 10 and message_count % 5 == 0:  # Every 5 messages after 10
+        if message_count >= 5 and message_count % 3 == 0:
             background_tasks.add_task(
                 create_conversation_summary_task,
                 conversation.id,
@@ -404,7 +411,8 @@ async def chat(
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     conv_manager: ConversationManager = Depends(get_conversation_manager),
-    memory_manager: MemoryManager = Depends(get_memory_manager)
+    memory_manager: MemoryManager = Depends(get_memory_manager),
+    enhanced_memory: EnhancedMemoryManager = Depends(get_enhanced_memory_manager)
 ):
     """Send a chat message and get response"""
     start_time = time.time()
@@ -436,12 +444,12 @@ async def chat(
             request.message
         )
 
-        # Build conversation context (without historical context for regular chat)
+        # Build conversation context WITH historical context enabled by default
         context = await conv_manager.build_conversation_context(
             conversation.id,
             request.user_id,
             max_messages=settings.max_conversation_history,
-            include_historical_context=False
+            include_historical_context=True  # Always enabled now
         )
 
         # Get LLM response
@@ -469,19 +477,29 @@ async def chat(
             }
         )
 
-        # Extract and store implicit memories (background task)
+        # Extract and store enhanced memories (background task)
         background_tasks.add_task(
-            extract_and_store_memories,
+            extract_and_store_enhanced_memories,
             request.user_id,
             request.message,
             response_content,
-            memory_manager
+            conversation.id,
+            enhanced_memory
         )
 
         # Auto-generate conversation title if it's the first exchange
         if len(conv_manager.get_conversation_messages(conversation.id)) == 2:
             background_tasks.add_task(
                 auto_generate_title,
+                conversation.id,
+                conv_manager
+            )
+
+        # Create conversation summary more frequently (every 3 messages after 5)
+        message_count = len(conv_manager.get_conversation_messages(conversation.id))
+        if message_count >= 5 and message_count % 3 == 0:
+            background_tasks.add_task(
+                create_conversation_summary_task,
                 conversation.id,
                 conv_manager
             )
@@ -513,7 +531,8 @@ async def chat_stream(
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     conv_manager: ConversationManager = Depends(get_conversation_manager),
-    memory_manager: MemoryManager = Depends(get_memory_manager)
+    memory_manager: MemoryManager = Depends(get_memory_manager),
+    enhanced_memory: EnhancedMemoryManager = Depends(get_enhanced_memory_manager)
 ):
     """Stream chat response"""
     if not request.stream:
@@ -545,12 +564,12 @@ async def chat_stream(
                 request.message
             )
 
-            # Build context (without historical context for streaming)
+            # Build context WITH historical context enabled
             context = await conv_manager.build_conversation_context(
                 conversation.id,
                 request.user_id,
                 max_messages=settings.max_conversation_history,
-                include_historical_context=False
+                include_historical_context=True  # Always enabled now
             )
 
             # Stream LLM response
@@ -595,13 +614,14 @@ async def chat_stream(
                 }
             )
 
-            # Background tasks for memory extraction
+            # Background tasks for enhanced memory extraction
             background_tasks.add_task(
-                extract_and_store_memories,
+                extract_and_store_enhanced_memories,
                 request.user_id,
                 request.message,
                 full_response,
-                memory_manager
+                conversation.id,
+                enhanced_memory
             )
 
         except TimeoutException as e:
@@ -697,6 +717,37 @@ def update_user_memory(
     return memory
 
 
+# Enhanced memory search endpoint
+@app.get("/users/{user_id}/memory/search")
+async def search_user_memories(
+    user_id: int,
+    q: str,
+    limit: int = 10,
+    db: Session = Depends(get_db),
+    enhanced_memory: EnhancedMemoryManager = Depends(get_enhanced_memory_manager)
+):
+    """Search user memories semantically"""
+    memories = await enhanced_memory.search_memories_semantic(user_id, q, limit)
+    
+    return {
+        "query": q,
+        "results": [
+            {
+                "id": m.id,
+                "key": m.key,
+                "value": m.value,
+                "confidence": m.confidence,
+                "memory_type": m.memory_type,
+                "source": m.source,
+                "created_at": m.created_at,
+                "access_count": m.access_count
+            }
+            for m in memories
+        ],
+        "total_found": len(memories)
+    }
+
+
 # System status endpoint
 @app.get("/status", response_model=SystemStatus)
 async def get_system_status(db: Session = Depends(get_db)):
@@ -734,6 +785,24 @@ async def extract_and_store_memories(
             logger.info(f"Stored {len(memories)} implicit memories for user {user_id}")
     except Exception as e:
         logger.error(f"Failed to extract memories: {e}")
+
+
+async def extract_and_store_enhanced_memories(
+    user_id: int,
+    user_message: str,
+    assistant_response: str,
+    conversation_id: int,
+    enhanced_memory: EnhancedMemoryManager
+):
+    """Enhanced background task to extract and store facts and memories"""
+    try:
+        memories = await enhanced_memory.extract_and_store_facts(
+            user_id, user_message, assistant_response, conversation_id
+        )
+        if memories:
+            logger.info(f"Stored {len(memories)} enhanced memories for user {user_id}")
+    except Exception as e:
+        logger.error(f"Failed to extract enhanced memories: {e}")
 
 
 async def auto_generate_title(conversation_id: int, conv_manager: ConversationManager):

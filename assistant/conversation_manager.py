@@ -128,11 +128,38 @@ class ConversationManager:
         include_historical_context: bool = True
     ) -> List[Dict[str, str]]:
         """Build conversation context for LLM with historical context"""
+        # Use enhanced memory manager if available
+        try:
+            from memory_manager import EnhancedMemoryManager
+            enhanced_memory = EnhancedMemoryManager(self.db)
+            use_enhanced = True
+        except:
+            enhanced_memory = None
+            use_enhanced = False
+        
         # Get user memory context
         memory_context = self.memory_manager.get_memory_context(user_id)
 
         # Get recent messages
         messages = self.get_recent_messages(conversation_id, max_messages)
+
+        # Get contextual memories based on current conversation
+        contextual_memory = ""
+        if use_enhanced and enhanced_memory and messages:
+            # Get the most recent user message for context
+            current_message = ""
+            for msg in reversed(messages):
+                if msg.role == MessageRole.USER:
+                    current_message = msg.content
+                    break
+            
+            if current_message:
+                try:
+                    contextual_memory = await enhanced_memory.get_contextual_memories(
+                        user_id, current_message, limit=5
+                    )
+                except Exception as e:
+                    logger.warning(f"Could not get contextual memories: {e}")
 
         # Get historical context if enabled
         historical_context = ""
@@ -175,6 +202,9 @@ class ConversationManager:
 
         if memory_context:
             system_parts.append(f"Here's what you know about the user:\n{memory_context}")
+            
+        if contextual_memory:
+            system_parts.append(f"\n{contextual_memory}")
 
         if historical_context:
             system_parts.append(historical_context)
