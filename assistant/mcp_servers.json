@@ -1,0 +1,80 @@
+{
+  "version": "1.0.0",
+  "description": "Model Context Protocol server configurations for WikiLLM Assistant",
+  "servers": [
+    {
+      "server_id": "filesystem-example",
+      "name": "Filesystem Access",
+      "description": "Provides access to local filesystem operations",
+      "type": "stdio",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-filesystem",
+        "/Users/kyle.butz/go/src/github.com/kbutz/wikillm/assistant/tmp"],
+      "enabled": true,
+      "timeout": 30,
+      "auto_reconnect": true,
+      "env": {
+        "NODE_ENV": "production"
+      }
+    },
+    {
+      "server_id": "web-search-example",
+      "name": "Web Search",
+      "description": "Brave Search API integration for web search capabilities",
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-brave-search"],
+      "enabled": false,
+      "timeout": 45,
+      "auto_reconnect": true,
+      "env": {
+        "BRAVE_API_KEY": "your-brave-api-key-here"
+      }
+    },
+    {
+      "server_id": "github-example",
+      "name": "GitHub Integration",
+      "description": "GitHub API integration for repository access",
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "enabled": false,
+      "timeout": 30,
+      "auto_reconnect": true,
+      "env": {
+        "GITHUB_PERSONAL_ACCESS_TOKEN": "your-github-token-here"
+      }
+    },
+    {
+      "server_id": "sqlite-example",
+      "name": "SQLite Database",
+      "description": "SQLite database integration for local data access",
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-sqlite", "/path/to/database.db"],
+      "enabled": false,
+      "timeout": 30,
+      "auto_reconnect": true
+    },
+    {
+      "server_id": "memory-example",
+      "name": "Memory Bank",
+      "description": "Persistent memory storage for the assistant",
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-memory"],
+      "enabled": false,
+      "timeout": 30,
+      "auto_reconnect": true
+    }
+  ],
+  "global_settings": {
+    "max_concurrent_connections": 10,
+    "connection_retry_attempts": 3,
+    "connection_retry_delay": 5,
+    "health_check_interval": 300,
+    "logging_level": "INFO"
+  }
+}
