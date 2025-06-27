@@ -181,6 +181,32 @@ Automatically extracted patterns:
 - **Domain Expertise**: Technical knowledge areas
 - **Interaction History**: Frequently discussed topics
 
+### Automatic Pattern Detection
+The system automatically extracts user preferences from conversations:
+
+```python
+# Example: User says "Please keep it brief"
+# System extracts:
+{
+  "key": "response_style",
+  "value": "concise",
+  "confidence": 0.8,
+  "type": "implicit"
+}
+```
+
+### Personal Information Extraction
+Advanced regex patterns extract personal details:
+- Names: "My name is John" → stores "name": "John"
+- Professions: "I work as a developer" → stores "profession": "developer"
+- Locations: "I live in Seattle" → stores "location": "Seattle"
+
+### Memory Consolidation
+- Automatically merges duplicate memories
+- Maintains highest confidence values
+- Prevents memory bloat
+- Configurable cleanup policies
+
 ## Configuration
 
 ### Environment Variables
@@ -241,6 +267,15 @@ requests.post(f'http://localhost:8000/users/{user_id}/memory', json={
 
 ## Development
 
+### CLI Interface
+```bash
+python cli.py init          # Initialize database
+python cli.py sample-data   # Create test data
+python cli.py analyze       # Analyze memory patterns
+python cli.py export 1      # Export user data
+python cli.py serve         # Start server
+```
+
 ### Running Tests
 ```bash
 # Backend tests
@@ -285,6 +320,27 @@ alembic upgrade head
 - In-memory conversation context caching
 - User preference caching
 - Model response caching for repeated queries
+
+## Advanced Capabilities
+
+### Smart Memory Management
+- Confidence scoring for extracted information
+- Temporal decay for outdated memories
+- Context-aware memory retrieval
+- Memory importance weighting
+
+### Conversation Intelligence
+- Auto-generated conversation titles
+- Topic detection and categorization
+- Conversation summarization
+- Context window optimization
+
+### User Experience
+- Responsive, modern UI design  
+- Real-time typing indicators
+- Message timestamps and processing times
+- Memory visualization panel
+- Conversation export functionality
 
 ## Production Deployment
 
@@ -334,6 +390,17 @@ CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
 - Application logs: `assistant.log`
 - Database logs: Check SQLite error messages
 - LMStudio logs: Check LMStudio console
+
+## Future Enhancements
+
+The architecture supports easy extension for:
+- Multi-user authentication
+- Real-time collaboration
+- Plugin system for tools
+- Advanced analytics
+- Mobile applications
+- Voice interface
+- Multi-modal support
 
 ## Contributing
 
