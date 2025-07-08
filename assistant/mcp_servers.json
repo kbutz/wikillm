@@ -1,6 +1,5 @@
 {
   "version": "1.0.0",
-  "description": "Model Context Protocol server configurations for WikiLLM Assistant",
   "servers": [
     {
       "server_id": "filesystem-example",
@@ -11,13 +10,15 @@
       "args": [
         "-y",
         "@modelcontextprotocol/server-filesystem",
-        "/Users/kyle.butz/go/src/github.com/kbutz/wikillm/assistant/tmp"],
-      "enabled": true,
-      "timeout": 30,
-      "auto_reconnect": true,
+        "/Users/kyle.butz/go/src/github.com/kbutz/wikillm/assistant/tmp"
+      ],
+      "url": null,
       "env": {
         "NODE_ENV": "production"
-      }
+      },
+      "timeout": 30,
+      "enabled": true,
+      "auto_reconnect": true
     },
     {
       "server_id": "web-search-example",
@@ -25,13 +26,17 @@
       "description": "Brave Search API integration for web search capabilities",
       "type": "stdio",
       "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-brave-search"],
-      "enabled": false,
-      "timeout": 45,
-      "auto_reconnect": true,
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-brave-search"
+      ],
+      "url": null,
       "env": {
         "BRAVE_API_KEY": "your-brave-api-key-here"
-      }
+      },
+      "timeout": 45,
+      "enabled": false,
+      "auto_reconnect": true
     },
     {
       "server_id": "github-example",
@@ -39,13 +44,17 @@
       "description": "GitHub API integration for repository access",
       "type": "stdio",
       "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-github"],
-      "enabled": false,
-      "timeout": 30,
-      "auto_reconnect": true,
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-github"
+      ],
+      "url": null,
       "env": {
         "GITHUB_PERSONAL_ACCESS_TOKEN": "your-github-token-here"
-      }
+      },
+      "timeout": 30,
+      "enabled": false,
+      "auto_reconnect": true
     },
     {
       "server_id": "sqlite-example",
@@ -53,9 +62,15 @@
       "description": "SQLite database integration for local data access",
       "type": "stdio",
       "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-sqlite", "/path/to/database.db"],
-      "enabled": false,
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-sqlite",
+        "/path/to/database.db"
+      ],
+      "url": null,
+      "env": null,
       "timeout": 30,
+      "enabled": false,
       "auto_reconnect": true
     },
     {
@@ -64,17 +79,30 @@
       "description": "Persistent memory storage for the assistant",
       "type": "stdio",
       "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-memory"],
-      "enabled": false,
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-memory"
+      ],
+      "url": null,
+      "env": null,
       "timeout": 30,
+      "enabled": false,
+      "auto_reconnect": true
+    },
+    {
+      "server_id": "debug-test",
+      "name": "Debug Test Server",
+      "description": "Test server for debugging",
+      "type": "stdio",
+      "command": "echo",
+      "args": [
+        "hello from mcp"
+      ],
+      "url": null,
+      "env": null,
+      "timeout": 5,
+      "enabled": false,
       "auto_reconnect": true
     }
-  ],
-  "global_settings": {
-    "max_concurrent_connections": 10,
-    "connection_retry_attempts": 3,
-    "connection_retry_delay": 5,
-    "health_check_interval": 300,
-    "logging_level": "INFO"
-  }
+  ]
 }

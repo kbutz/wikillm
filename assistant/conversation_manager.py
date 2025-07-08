@@ -136,7 +136,7 @@ class ConversationManager:
         except:
             enhanced_memory = None
             use_enhanced = False
-        
+
         # Get user memory context
         memory_context = self.memory_manager.get_memory_context(user_id)
 
@@ -152,7 +152,7 @@ class ConversationManager:
                 if msg.role == MessageRole.USER:
                     current_message = msg.content
                     break
-            
+
             if current_message:
                 try:
                     contextual_memory = await enhanced_memory.get_contextual_memories(
@@ -167,27 +167,34 @@ class ConversationManager:
             try:
                 from search_manager import SearchManager
                 search_manager = SearchManager(self.db)
-                
+
                 # Get the most recent user message for context
                 current_message = ""
                 for msg in reversed(messages):
                     if msg.role == MessageRole.USER:
                         current_message = msg.content
                         break
-                
+
                 if current_message:
                     related_conversations = await search_manager.get_related_conversations(
                         user_id, current_message, limit=3
                     )
-                    
+
                     if related_conversations:
                         historical_parts = []
                         for conv_summary in related_conversations:
                             if conv_summary.conversation_id != conversation_id:
-                                historical_parts.append(
-                                    f"• {conv_summary.conversation.title}: {conv_summary.summary[:200]}..."
-                                )
-                        
+                                # Check if conversation is not None before accessing title
+                                if conv_summary.conversation is not None:
+                                    historical_parts.append(
+                                        f"• {conv_summary.conversation.title}: {conv_summary.summary[:200]}..."
+                                    )
+                                else:
+                                    # Use a default title if conversation is None
+                                    historical_parts.append(
+                                        f"• Previous conversation: {conv_summary.summary[:200]}..."
+                                    )
+
                         if historical_parts:
                             historical_context = f"\n\nBased on previous conversations:\n{chr(10).join(historical_parts[:3])}"
             except Exception as e:
@@ -202,7 +209,7 @@ class ConversationManager:
 
         if memory_context:
             system_parts.append(f"Here's what you know about the user:\n{memory_context}")
-            
+
         if contextual_memory:
             system_parts.append(f"\n{contextual_memory}")
 
@@ -220,6 +227,9 @@ class ConversationManager:
                 "role": message.role,
                 "content": message.content
             })
+
+        logger.info(f"conversation_manager - Built context for conversation {conversation_id} with {len(context)} messages for user {user_id}")
+        logger.info(f"conversation_manager - Context: {context}")
 
         return context
 

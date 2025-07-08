@@ -53,3 +53,8 @@ def get_db():
         yield db
     finally:
         db.close()
+
+
+def get_db_direct():
+    """Get a database session directly (not as a context manager)"""
+    return SessionLocal()
