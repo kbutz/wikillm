@@ -7,6 +7,10 @@ export class ApiService {
     this.baseUrl = process.env.REACT_APP_API_URL || 'http://localhost:8000';
   }
 
+  protected getBaseUrl(): string {
+    return this.baseUrl;
+  }
+
   async createUser(userData: { username: string; email?: string; full_name?: string }): Promise<User> {
     const response = await fetch(`${this.baseUrl}/users/`, {
       method: 'POST',
@@ -190,11 +194,11 @@ export class ApiService {
     };
   }> {
     const response = await fetch(`${this.baseUrl}/mcp/status`);
-    
+
     if (!response.ok) {
       throw new Error('Failed to get MCP status');
     }
-    
+
     return response.json();
   }
 
@@ -218,11 +222,11 @@ export class ApiService {
     };
   }> {
     const response = await fetch(`${this.baseUrl}/mcp/servers`);
-    
+
     if (!response.ok) {
       throw new Error('Failed to list MCP servers');
     }
-    
+
     return response.json();
   }
 
@@ -247,12 +251,12 @@ export class ApiService {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(config)
     });
-    
+
     if (!response.ok) {
       const error = await response.json();
       throw new Error(error.detail || 'Failed to add MCP server');
     }
-    
+
     return response.json();
   }
 
@@ -277,12 +281,12 @@ export class ApiService {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(config)
     });
-    
+
     if (!response.ok) {
       const error = await response.json();
       throw new Error(error.detail || 'Failed to update MCP server');
     }
-    
+
     return response.json();
   }
 
@@ -293,12 +297,12 @@ export class ApiService {
     const response = await fetch(`${this.baseUrl}/mcp/servers/${serverId}`, {
       method: 'DELETE'
     });
-    
+
     if (!response.ok) {
       const error = await response.json();
       throw new Error(error.detail || 'Failed to delete MCP server');
     }
-    
+
     return response.json();
   }
 
@@ -309,12 +313,12 @@ export class ApiService {
     const response = await fetch(`${this.baseUrl}/mcp/servers/${serverId}/connect`, {
       method: 'POST'
     });
-    
+
     if (!response.ok) {
       const error = await response.json();
       throw new Error(error.detail || 'Failed to connect to MCP server');
     }
-    
+
     return response.json();
   }
 
@@ -325,12 +329,12 @@ export class ApiService {
     const response = await fetch(`${this.baseUrl}/mcp/servers/${serverId}/disconnect`, {
       method: 'POST'
     });
-    
+
     if (!response.ok) {
       const error = await response.json();
       throw new Error(error.detail || 'Failed to disconnect from MCP server');
     }
-    
+
     return response.json();
   }
 
@@ -347,11 +351,11 @@ export class ApiService {
     };
   }> {
     const response = await fetch(`${this.baseUrl}/mcp/tools`);
-    
+
     if (!response.ok) {
       throw new Error('Failed to list MCP tools');
     }
-    
+
     return response.json();
   }
 
@@ -368,12 +372,12 @@ export class ApiService {
         server_id: serverId
       })
     });
-    
+
     if (!response.ok) {
       const error = await response.json();
       throw new Error(error.detail || 'Failed to call MCP tool');
     }
-    
+
     return response.json();
   }
 
@@ -391,11 +395,11 @@ export class ApiService {
     };
   }> {
     const response = await fetch(`${this.baseUrl}/mcp/resources`);
-    
+
     if (!response.ok) {
       throw new Error('Failed to list MCP resources');
     }
-    
+
     return response.json();
   }
 
@@ -411,12 +415,12 @@ export class ApiService {
         server_id: serverId
       })
     });
-    
+
     if (!response.ok) {
       const error = await response.json();
       throw new Error(error.detail || 'Failed to read MCP resource');
     }
-    
+
     return response.json();
   }
 
@@ -433,11 +437,11 @@ export class ApiService {
     };
   }> {
     const response = await fetch(`${this.baseUrl}/mcp/prompts`);
-    
+
     if (!response.ok) {
       throw new Error('Failed to list MCP prompts');
     }
-    
+
     return response.json();
   }
 
@@ -454,12 +458,12 @@ export class ApiService {
         server_id: serverId
       })
     });
-    
+
     if (!response.ok) {
       const error = await response.json();
       throw new Error(error.detail || 'Failed to get MCP prompt');
     }
-    
+
     return response.json();
   }
 
@@ -478,11 +482,11 @@ export class ApiService {
     };
   }> {
     const response = await fetch(`${this.baseUrl}/conversations/${conversationId}/tools/analytics?user_id=${userId}`);
-    
+
     if (!response.ok) {
       throw new Error('Failed to get tool analytics');
     }
-    
+
     return response.json();
   }
 }

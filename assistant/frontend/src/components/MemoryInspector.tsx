@@ -20,7 +20,7 @@ export default function MemoryInspector({ userId, onClose }: MemoryInspectorProp
   const fetchMemoryData = async () => {
     setLoading(true);
     try {
-      const data = await adminService.getUserMemory(userId);
+      const data = await adminService.getAdminUserMemory(userId);
       setMemoryData(data);
     } catch (error) {
       console.error('Failed to fetch memory data:', error);
@@ -31,7 +31,7 @@ export default function MemoryInspector({ userId, onClose }: MemoryInspectorProp
   const saveMemoryData = async (section: string, data: any) => {
     setSaveStatus('saving');
     try {
-      await adminService.updateUserMemory(userId, { [section]: data });
+      await adminService.updateAdminUserMemory(userId, { [section]: data });
       setSaveStatus('success');
       await fetchMemoryData();
       setTimeout(() => setSaveStatus(null), 2000);
@@ -43,11 +43,11 @@ export default function MemoryInspector({ userId, onClose }: MemoryInspectorProp
 
   const exportMemoryData = () => {
     if (!memoryData) return;
-    
+
     const dataStr = JSON.stringify(memoryData, null, 2);
     const dataUri = 'data:application/json;charset=utf-8,'+ encodeURIComponent(dataStr);
     const exportFileDefaultName = `user_${userId}_memory.json`;
-    
+
     const linkElement = document.createElement('a');
     linkElement.setAttribute('href', dataUri);
     linkElement.setAttribute('download', exportFileDefaultName);
@@ -55,7 +55,7 @@ export default function MemoryInspector({ userId, onClose }: MemoryInspectorProp
   };
 
   const clearMemorySection = async (section: string) => {
-    if (confirm(`Are you sure you want to clear the ${section} section?`)) {
+    if (window.confirm(`Are you sure you want to clear the ${section} section?`)) {
       const emptyData = section === 'conversation_history' ? [] : {};
       await saveMemoryData(section, emptyData);
     }
@@ -72,7 +72,7 @@ export default function MemoryInspector({ userId, onClose }: MemoryInspectorProp
 
   const saveEdit = async () => {
     if (!editingSection) return;
-    
+
     try {
       const parsedData = JSON.parse(editedData);
       await saveMemoryData(editingSection, parsedData);
@@ -90,15 +90,15 @@ export default function MemoryInspector({ userId, onClose }: MemoryInspectorProp
 
   const filterData = (data: any, searchTerm: string): any => {
     if (!searchTerm) return data;
-    
+
     const search = searchTerm.toLowerCase();
-    
+
     if (Array.isArray(data)) {
       return data.filter(item => 
         JSON.stringify(item).toLowerCase().includes(search)
       );
     }
-    
+
     if (typeof data === 'object' && data !== null) {
       const filtered: any = {};
       Object.keys(data).forEach(key => {
@@ -116,14 +116,14 @@ export default function MemoryInspector({ userId, onClose }: MemoryInspectorProp
       });
       return filtered;
     }
-    
+
     return data;
   };
 
   const MemorySection = ({ title, data, sectionKey }: { title: string; data: any; sectionKey: string }) => {
     const isEditing = editingSection === sectionKey;
     const displayData = searchTerm ? filterData(data, searchTerm) : data;
-    
+
     return (
       <div className="border rounded-lg p-4 mb-4 bg-white">
         <div className="flex justify-between items-center mb-4">
@@ -148,7 +148,7 @@ export default function MemoryInspector({ userId, onClose }: MemoryInspectorProp
             </button>
           </div>
         </div>
-        
+
         {isEditing ? (
           <div className="space-y-4">
             <textarea
@@ -224,7 +224,7 @@ export default function MemoryInspector({ userId, onClose }: MemoryInspectorProp
               <X size={20} />
             </button>
           </div>
-          
+
           <div className="flex gap-4 items-center">
             <div className="flex-1 relative">
               <Search className="absolute left-3 top-3 h-4 w-4 text-gray-400" />
@@ -244,7 +244,7 @@ export default function MemoryInspector({ userId, onClose }: MemoryInspectorProp
               Export
             </button>
           </div>
-          
+
           {saveStatus && (
             <div className={`mt-4 p-3 rounded-lg flex items-center gap-2 ${
               saveStatus === 'success' ? 'bg-green-100 text-green-800' :
@@ -260,7 +260,7 @@ export default function MemoryInspector({ userId, onClose }: MemoryInspectorProp
             </div>
           )}
         </div>
-        
+
         <div className="p-6 overflow-y-auto max-h-[calc(90vh-200px)]">
           <div className="mb-6">
             <div className="grid grid-cols-3 gap-4 mb-6">
@@ -282,31 +282,31 @@ export default function MemoryInspector({ userId, onClose }: MemoryInspectorProp
               </div>
             </div>
           </div>
-          
+
           <MemorySection
             title="Personal Information"
             data={memoryData.personal_info}
             sectionKey="personal_info"
           />
-          
+
           <MemorySection
             title="Conversation History"
             data={memoryData.conversation_history}
             sectionKey="conversation_history"
           />
-          
+
           <MemorySection
             title="Context Memory"
             data={memoryData.context_memory}
             sectionKey="context_memory"
           />
-          
+
           <MemorySection
             title="Preferences"
             data={memoryData.preferences}
             sectionKey="preferences"
           />
-          
+
           <div className="mt-6 p-4 bg-gray-50 rounded-lg">
             <div className="text-sm text-gray-600">
               <strong>Last Updated:</strong> {new Date(memoryData.last_updated).toLocaleString()}

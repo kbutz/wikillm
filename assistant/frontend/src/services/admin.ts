@@ -50,7 +50,7 @@ export interface AdminSystemStats {
 export class AdminService extends ApiService {
   // User Management
   async getAdminUsers(skip: number = 0, limit: number = 100): Promise<AdminUser[]> {
-    const response = await fetch(`${this.baseUrl}/admin/users?skip=${skip}&limit=${limit}`);
+    const response = await fetch(`${this.getBaseUrl()}/admin/users?skip=${skip}&limit=${limit}`);
     if (!response.ok) {
       throw new Error('Failed to fetch admin users');
     }
@@ -58,7 +58,7 @@ export class AdminService extends ApiService {
   }
 
   async getUserDetails(userId: number): Promise<any> {
-    const response = await fetch(`${this.baseUrl}/admin/users/${userId}`);
+    const response = await fetch(`${this.getBaseUrl()}/admin/users/${userId}`);
     if (!response.ok) {
       throw new Error('Failed to fetch user details');
     }
@@ -66,7 +66,7 @@ export class AdminService extends ApiService {
   }
 
   async createAdminUser(userData: { username: string; email?: string; full_name?: string }): Promise<any> {
-    const response = await fetch(`${this.baseUrl}/admin/users`, {
+    const response = await fetch(`${this.getBaseUrl()}/admin/users`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(userData)
@@ -78,7 +78,7 @@ export class AdminService extends ApiService {
   }
 
   async deleteAdminUser(userId: number): Promise<void> {
-    const response = await fetch(`${this.baseUrl}/admin/users/${userId}`, {
+    const response = await fetch(`${this.getBaseUrl()}/admin/users/${userId}`, {
       method: 'DELETE'
     });
     if (!response.ok) {
@@ -87,16 +87,16 @@ export class AdminService extends ApiService {
   }
 
   // Memory Management
-  async getUserMemory(userId: number): Promise<AdminMemory> {
-    const response = await fetch(`${this.baseUrl}/admin/users/${userId}/memory`);
+  async getAdminUserMemory(userId: number): Promise<AdminMemory> {
+    const response = await fetch(`${this.getBaseUrl()}/admin/users/${userId}/memory`);
     if (!response.ok) {
       throw new Error('Failed to fetch user memory');
     }
     return response.json();
   }
 
-  async updateUserMemory(userId: number, memoryData: any): Promise<void> {
-    const response = await fetch(`${this.baseUrl}/admin/users/${userId}/memory`, {
+  async updateAdminUserMemory(userId: number, memoryData: any): Promise<void> {
+    const response = await fetch(`${this.getBaseUrl()}/admin/users/${userId}/memory`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(memoryData)
@@ -108,9 +108,9 @@ export class AdminService extends ApiService {
 
   async clearUserMemory(userId: number, memoryType?: string): Promise<void> {
     const url = memoryType 
-      ? `${this.baseUrl}/admin/users/${userId}/memory?memory_type=${memoryType}`
-      : `${this.baseUrl}/admin/users/${userId}/memory`;
-    
+      ? `${this.getBaseUrl()}/admin/users/${userId}/memory?memory_type=${memoryType}`
+      : `${this.getBaseUrl()}/admin/users/${userId}/memory`;
+
     const response = await fetch(url, { method: 'DELETE' });
     if (!response.ok) {
       throw new Error('Failed to clear user memory');
@@ -119,7 +119,7 @@ export class AdminService extends ApiService {
 
   // Conversation Management
   async getAdminUserConversations(userId: number, limit: number = 100): Promise<AdminConversation[]> {
-    const response = await fetch(`${this.baseUrl}/admin/users/${userId}/conversations?limit=${limit}`);
+    const response = await fetch(`${this.getBaseUrl()}/admin/users/${userId}/conversations?limit=${limit}`);
     if (!response.ok) {
       throw new Error('Failed to fetch user conversations');
     }
@@ -127,7 +127,7 @@ export class AdminService extends ApiService {
   }
 
   async getConversationMessages(conversationId: number): Promise<any> {
-    const response = await fetch(`${this.baseUrl}/admin/conversations/${conversationId}/messages`);
+    const response = await fetch(`${this.getBaseUrl()}/admin/conversations/${conversationId}/messages`);
     if (!response.ok) {
       throw new Error('Failed to fetch conversation messages');
     }
@@ -135,7 +135,7 @@ export class AdminService extends ApiService {
   }
 
   async deleteAdminConversation(conversationId: number): Promise<void> {
-    const response = await fetch(`${this.baseUrl}/admin/conversations/${conversationId}`, {
+    const response = await fetch(`${this.getBaseUrl()}/admin/conversations/${conversationId}`, {
       method: 'DELETE'
     });
     if (!response.ok) {
@@ -145,11 +145,11 @@ export class AdminService extends ApiService {
 
   // Data Export
   async exportUserData(userId: number): Promise<void> {
-    const response = await fetch(`${this.baseUrl}/admin/users/${userId}/export`);
+    const response = await fetch(`${this.getBaseUrl()}/admin/users/${userId}/export`);
     if (!response.ok) {
       throw new Error('Failed to export user data');
     }
-    
+
     const blob = await response.blob();
     const url = window.URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -163,7 +163,7 @@ export class AdminService extends ApiService {
 
   // System Statistics
   async getSystemStats(): Promise<AdminSystemStats> {
-    const response = await fetch(`${this.baseUrl}/admin/system/stats`);
+    const response = await fetch(`${this.getBaseUrl()}/admin/system/stats`);
     if (!response.ok) {
       throw new Error('Failed to fetch system stats');
     }
@@ -172,7 +172,7 @@ export class AdminService extends ApiService {
 
   // User Impersonation
   async impersonateUser(userId: number): Promise<any> {
-    const response = await fetch(`${this.baseUrl}/admin/users/${userId}/impersonate`, {
+    const response = await fetch(`${this.getBaseUrl()}/admin/users/${userId}/impersonate`, {
       method: 'POST'
     });
     if (!response.ok) {
@@ -183,7 +183,7 @@ export class AdminService extends ApiService {
 
   // Admin Health Check
   async adminHealthCheck(): Promise<any> {
-    const response = await fetch(`${this.baseUrl}/admin/health`);
+    const response = await fetch(`${this.getBaseUrl()}/admin/health`);
     if (!response.ok) {
       throw new Error('Admin health check failed');
     }

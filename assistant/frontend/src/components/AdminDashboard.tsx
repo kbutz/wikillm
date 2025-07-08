@@ -36,7 +36,7 @@ export default function AdminDashboard({ onBack }: AdminDashboardProps) {
   const fetchUserMemory = async (userId: number) => {
     setLoading(true);
     try {
-      const data = await adminService.getUserMemory(userId);
+      const data = await adminService.getAdminUserMemory(userId);
       setUserMemory(data);
     } catch (error) {
       console.error('Failed to fetch user memory:', error);
@@ -68,7 +68,7 @@ export default function AdminDashboard({ onBack }: AdminDashboardProps) {
 
   const createUser = async () => {
     if (!newUserData.username.trim()) return;
-    
+
     try {
       await adminService.createAdminUser(newUserData);
       setNewUserData({ username: '', email: '', full_name: '' });
@@ -80,8 +80,8 @@ export default function AdminDashboard({ onBack }: AdminDashboardProps) {
   };
 
   const deleteUser = async (userId: number) => {
-    if (!confirm('Are you sure you want to delete this user and all their data?')) return;
-    
+    if (!window.confirm('Are you sure you want to delete this user and all their data?')) return;
+
     try {
       await adminService.deleteAdminUser(userId);
       setUsers(users.filter(u => u.id !== userId));
@@ -405,7 +405,7 @@ export default function AdminDashboard({ onBack }: AdminDashboardProps) {
                               </button>
                               <button
                                 onClick={() => {
-                                  if (confirm('Are you sure you want to delete this conversation?')) {
+                                  if (window.confirm('Are you sure you want to delete this conversation?')) {
                                     adminService.deleteAdminConversation(conv.id).then(() => {
                                       fetchUserConversations(selectedUser.id);
                                     });
@@ -441,7 +441,7 @@ export default function AdminDashboard({ onBack }: AdminDashboardProps) {
                   <div className="space-y-4">
                     <button
                       onClick={() => {
-                        if (confirm('Are you sure you want to clear all memory for this user?')) {
+                        if (window.confirm('Are you sure you want to clear all memory for this user?')) {
                           adminService.clearUserMemory(selectedUser.id).then(() => {
                             fetchUserMemory(selectedUser.id);
                           });
@@ -538,7 +538,7 @@ export default function AdminDashboard({ onBack }: AdminDashboardProps) {
           </div>
         </div>
       )}
-      
+
       {/* Memory Inspector */}
       {showMemoryInspector && selectedUser && (
         <MemoryInspector
