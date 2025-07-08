@@ -11,6 +11,7 @@ from datetime import datetime, timedelta
 from models import UserMemory, UserPreference, User, Message
 from schemas import UserMemoryCreate, UserPreferenceCreate, MemoryType
 from lmstudio_client import lmstudio_client
+from llm_response_processor import LLMResponseProcessor
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +22,7 @@ class EnhancedMemoryManager:
     def __init__(self, db: Session):
         self.db = db
         self.original_manager = MemoryManager(db)  # Keep original functionality
+        self.response_processor = LLMResponseProcessor()
 
     async def extract_and_store_facts(
         self, 
@@ -64,7 +66,10 @@ class EnhancedMemoryManager:
 
     async def _extract_facts_with_llm(self, user_message: str, assistant_response: str) -> List[Dict[str, Any]]:
         """Use LLM to extract facts and relationships with enhanced validation"""
-
+        
+        # Clean assistant response to remove thinking tags
+        cleaned_assistant_response = self.response_processor.process_memory_extraction_text(assistant_response)
+        
         extraction_prompt = f"""Extract important facts and relationships from this conversation exchange.
 Focus on:
 1. Personal information (names, relationships, pets, family)
@@ -74,7 +79,7 @@ Focus on:
 5. Goals or plans
 
 User said: {user_message}
-Assistant responded: {assistant_response}
+Assistant responded: {cleaned_assistant_response}
 
 Return a JSON array of facts. Each fact MUST have:
 - key: a searchable identifier (e.g., "pet_dog_name", "favorite_food", "skill_programming")

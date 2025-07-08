@@ -1,4 +1,6 @@
-import { User, Conversation, UserMemory, Message } from '../types';
+import { User, Conversation, UserMemory, Message, ChatRequestWithDebug, ChatResponseWithDebug } from '../types';
+
+import { DebugData } from '../types';
 
 export class ApiService {
   private baseUrl: string;
@@ -90,6 +92,49 @@ export class ApiService {
     if (!response.ok) {
       const error = await response.json();
       throw new Error(error.detail || 'Failed to send message');
+    }
+
+    return response.json();
+  }
+
+  async sendMessageWithDebug(data: ChatRequestWithDebug): Promise<ChatResponseWithDebug> {
+    const response = await fetch(`${this.baseUrl}/chat/debug`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ...data,
+        include_intermediary_steps: data.include_intermediary_steps ?? true,
+        include_llm_request: data.include_llm_request ?? true,
+        include_tool_details: data.include_tool_details ?? true,
+        include_context_building: data.include_context_building ?? true
+      })
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.detail || 'Failed to send debug message');
+    }
+
+    return response.json();
+  }
+
+  async getConversationDebugSummary(conversationId: number, userId: number): Promise<{
+    success: boolean;
+    data: {
+      conversation_id: number;
+      total_messages: number;
+      debug_messages: number;
+      total_steps: number;
+      total_tools_used: number;
+      total_processing_time: number;
+      average_processing_time: number;
+      debug_coverage: number;
+    };
+  }> {
+    const response = await fetch(`${this.baseUrl}/conversations/${conversationId}/debug?user_id=${userId}`);
+
+    if (!response.ok) {
+      throw new Error('Failed to get conversation debug summary');
     }
 
     return response.json();
@@ -534,4 +579,22 @@ export class ApiService {
 
     return response.json();
   }
+
+  async getDebugData(conversationId: number, userId: number): Promise<DebugData> {
+    const response = await fetch(`${this.baseUrl}/conversations/${conversationId}/debug/data?user_id=${userId}`);
+
+    if (!response.ok) {
+      throw new Error('Failed to get debug data');
+    }
+
+    return response.json();
+  }
 }
+
+// Create a singleton instance of ApiService
+const apiService = new ApiService();
+
+// Export standalone functions that use the ApiService instance
+export const fetchDebugData = (conversationId: number, userId: number): Promise<DebugData> => {
+  return apiService.getDebugData(conversationId, userId);
+};
