@@ -1,13 +1,19 @@
 """
-Debug routes for tool usage tracing and system monitoring
+Debug routes for tool usage tracing, system monitoring, and debug script execution
 """
 import logging
 import time
-from typing import List
-from fastapi import HTTPException, Depends, BackgroundTasks, status, APIRouter
+import os
+import sys
+import asyncio
+import subprocess
+import importlib.util
+from typing import List, Dict, Any, Optional
+from fastapi import HTTPException, Depends, BackgroundTasks, status, APIRouter, Response
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from httpx import TimeoutException
+from pydantic import BaseModel
 
 from database import get_db
 from models import User, Conversation, Message
@@ -29,6 +35,22 @@ debug_router = APIRouter(prefix="/debug", tags=["debug"])
 
 # Global tool usage manager
 tool_usage_manager = None
+
+# Models for debug scripts
+class DebugScript(BaseModel):
+    """Debug script information"""
+    name: str
+    description: str
+    type: str
+    path: str
+
+class DebugScriptResult(BaseModel):
+    """Debug script execution result"""
+    script_name: str
+    success: bool
+    output: str
+    error: Optional[str] = None
+    execution_time: float
 
 def get_tool_usage_manager(db: Session = Depends(get_db)) -> ToolUsageManager:
     """Get tool usage manager instance"""
@@ -311,7 +333,7 @@ async def get_tool_usage_analytics(
             Conversation.id == conversation_id,
             Conversation.user_id == user_id
         ).first()
-        
+
         if not conversation:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -344,7 +366,7 @@ async def get_conversation_tool_traces(
             Conversation.id == conversation_id,
             Conversation.user_id == user_id
         ).first()
-        
+
         if not conversation:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -480,3 +502,161 @@ async def extract_and_store_enhanced_memories(
             logger.info(f"Stored {len(memories)} enhanced memories for user {user_id}")
     except Exception as e:
         logger.error(f"Failed to extract enhanced memories: {e}")
+
+
+# Debug script endpoints
+def get_debug_scripts() -> List[DebugScript]:
+    """Get list of available debug scripts"""
+    scripts = []
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+
+    # Define known debug scripts with descriptions
+    known_scripts = {
+        "verify_memory_system.py": {
+            "description": "Verify that all memory aspects are working correctly",
+            "type": "verify"
+        },
+        "verify_admin_implementation.py": {
+            "description": "Verify admin functionality implementation",
+            "type": "verify"
+        },
+        "check_memory_status.py": {
+            "description": "Check the status of the memory system",
+            "type": "check"
+        },
+        "debug_mcp.py": {
+            "description": "Debug MCP functionality",
+            "type": "debug"
+        },
+
+        "test_mcp.py": {
+            "description": "Test MCP functionality",
+            "type": "test"
+        },
+        "test_filesystem_server.py": {
+            "description": "Test filesystem server functionality",
+            "type": "test"
+        },
+        "test_mcp_fix.py": {
+            "description": "Test MCP fixes",
+            "type": "test"
+        },
+        "enhanced_migration.py": {
+            "description": "Run enhanced database migration",
+            "type": "migration"
+        },
+        "memory_system_test.py": {
+            "description": "Test memory system functionality",
+            "type": "test"
+        }
+    }
+
+    # Find all Python files that match known debug scripts
+    for script_name, script_info in known_scripts.items():
+        script_path = os.path.join(script_dir, script_name)
+        if os.path.exists(script_path):
+            scripts.append(DebugScript(
+                name=script_name,
+                description=script_info["description"],
+                type=script_info["type"],
+                path=script_path
+            ))
+
+    return scripts
+
+
+@debug_router.get("/scripts", response_model=List[DebugScript])
+async def list_debug_scripts():
+    """List all available debug scripts"""
+    try:
+        scripts = get_debug_scripts()
+        return scripts
+    except Exception as e:
+        logger.error(f"Failed to list debug scripts: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to list debug scripts: {str(e)}"
+        )
+
+
+@debug_router.post("/scripts/{script_name}/run", response_model=DebugScriptResult)
+async def run_debug_script(script_name: str):
+    """Run a debug script and return the result"""
+    start_time = time.time()
+
+    try:
+        # Get all available scripts
+        scripts = get_debug_scripts()
+
+        # Find the requested script
+        script = next((s for s in scripts if s.name == script_name), None)
+        if not script:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Script {script_name} not found"
+            )
+
+        # Run the script
+        result = await execute_script(script.path)
+
+        execution_time = time.time() - start_time
+        return DebugScriptResult(
+            script_name=script_name,
+            success=result["success"],
+            output=result["output"],
+            error=result["error"],
+            execution_time=execution_time
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to run debug script {script_name}: {e}")
+        execution_time = time.time() - start_time
+        return DebugScriptResult(
+            script_name=script_name,
+            success=False,
+            output="",
+            error=str(e),
+            execution_time=execution_time
+        )
+
+
+async def execute_script(script_path: str) -> Dict[str, Any]:
+    """Execute a Python script and return the result"""
+    try:
+        # Check if script exists
+        if not os.path.exists(script_path):
+            return {
+                "success": False,
+                "output": "",
+                "error": f"Script not found: {script_path}"
+            }
+
+        # Run the script as a subprocess and capture output
+        process = await asyncio.create_subprocess_exec(
+            sys.executable, script_path,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+
+        stdout, stderr = await process.communicate()
+
+        if process.returncode == 0:
+            return {
+                "success": True,
+                "output": stdout.decode(),
+                "error": None
+            }
+        else:
+            return {
+                "success": False,
+                "output": stdout.decode(),
+                "error": stderr.decode()
+            }
+    except Exception as e:
+        logger.error(f"Script execution error: {e}")
+        return {
+            "success": False,
+            "output": "",
+            "error": str(e)
+        }

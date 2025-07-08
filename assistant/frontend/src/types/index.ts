@@ -76,3 +76,18 @@ export interface SystemStatus {
   active_conversations: number;
   total_users: number;
 }
+
+export interface DebugScript {
+  name: string;
+  description: string;
+  type: string;
+  path: string;
+}
+
+export interface ScriptResult {
+  script_name: string;
+  success: boolean;
+  output: string;
+  error?: string;
+  execution_time: number;
+}

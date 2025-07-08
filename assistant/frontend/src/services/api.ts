@@ -499,4 +499,39 @@ export class ApiService {
 
     return response.json();
   }
+
+  // Debug script methods
+  async listDebugScripts(): Promise<Array<{
+    name: string;
+    description: string;
+    type: string;
+    path: string;
+  }>> {
+    const response = await fetch(`${this.baseUrl}/debug/scripts`);
+
+    if (!response.ok) {
+      throw new Error('Failed to list debug scripts');
+    }
+
+    return response.json();
+  }
+
+  async runDebugScript(scriptName: string): Promise<{
+    script_name: string;
+    success: boolean;
+    output: string;
+    error?: string;
+    execution_time: number;
+  }> {
+    const response = await fetch(`${this.baseUrl}/debug/scripts/${scriptName}/run`, {
+      method: 'POST'
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.detail || `Failed to run debug script: ${scriptName}`);
+    }
+
+    return response.json();
+  }
 }

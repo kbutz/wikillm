@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
-import { Users, Database, MessageSquare, Settings, Download, Search, Plus, Eye, Edit, Trash2, ArrowLeft } from 'lucide-react';
+import { Users, Database, MessageSquare, Settings, Download, Search, Plus, Eye, Edit, Trash2, ArrowLeft, Terminal } from 'lucide-react';
 import { AdminService, AdminUser, AdminConversation, AdminMemory, AdminSystemStats } from '../services/admin';
 import MemoryInspector from './MemoryInspector';
+import DebugScriptsPanel from './DebugScriptsPanel';
 
 const adminService = new AdminService();
 
@@ -12,7 +13,7 @@ interface AdminDashboardProps {
 export default function AdminDashboard({ onBack }: AdminDashboardProps) {
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [selectedUser, setSelectedUser] = useState<AdminUser | null>(null);
-  const [activeTab, setActiveTab] = useState<'users' | 'memory' | 'conversations' | 'system'>('users');
+  const [activeTab, setActiveTab] = useState<'users' | 'memory' | 'conversations' | 'system' | 'debug'>('users');
   const [searchTerm, setSearchTerm] = useState('');
   const [userMemory, setUserMemory] = useState<AdminMemory | null>(null);
   const [userConversations, setUserConversations] = useState<AdminConversation[]>([]);
@@ -21,6 +22,7 @@ export default function AdminDashboard({ onBack }: AdminDashboardProps) {
   const [showCreateUser, setShowCreateUser] = useState(false);
   const [newUserData, setNewUserData] = useState({ username: '', email: '', full_name: '' });
   const [showMemoryInspector, setShowMemoryInspector] = useState(false);
+  const [showDebugScriptsPanel, setShowDebugScriptsPanel] = useState(false);
 
   const fetchUsers = async () => {
     setLoading(true);
@@ -273,6 +275,7 @@ export default function AdminDashboard({ onBack }: AdminDashboardProps) {
         <TabButton id="memory" label="Memory" icon={Database} />
         <TabButton id="conversations" label="Conversations" icon={MessageSquare} />
         <TabButton id="system" label="System" icon={Settings} />
+        <TabButton id="debug" label="Debug Scripts" icon={Terminal} />
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -469,6 +472,25 @@ export default function AdminDashboard({ onBack }: AdminDashboardProps) {
                   </div>
                 </div>
               )}
+
+              {activeTab === 'debug' && (
+                <div>
+                  <h3 className="text-lg font-semibold mb-4">Debug Scripts</h3>
+                  <div className="mb-4">
+                    <button
+                      onClick={() => setShowDebugScriptsPanel(true)}
+                      className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 flex items-center gap-2"
+                    >
+                      <Terminal size={16} />
+                      Open Debug Scripts Panel
+                    </button>
+                  </div>
+                  <div className="text-sm text-gray-600 p-4 bg-gray-50 rounded-lg">
+                    <p>Run debug and verification scripts directly from the web interface.</p>
+                    <p className="mt-2">These scripts can help diagnose issues with the system, verify functionality, and perform maintenance tasks.</p>
+                  </div>
+                </div>
+              )}
             </div>
           ) : (
             <div className="text-center py-12">
@@ -544,6 +566,14 @@ export default function AdminDashboard({ onBack }: AdminDashboardProps) {
         <MemoryInspector
           userId={selectedUser.id}
           onClose={() => setShowMemoryInspector(false)}
+        />
+      )}
+
+      {/* Debug Scripts Panel */}
+      {showDebugScriptsPanel && (
+        <DebugScriptsPanel
+          userId={selectedUser ? selectedUser.id : 1}
+          onClose={() => setShowDebugScriptsPanel(false)}
         />
       )}
     </div>
