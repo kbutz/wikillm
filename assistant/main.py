@@ -31,6 +31,12 @@ from enhanced_schemas import (
     ToolUsageTrace, ToolUsageAnalytics, SystemDebugInfo,
     ChatRequestWithDebug, ChatResponseWithDebug
 )
+from enhanced_message_schemas import (
+    ChatRequestWithDebug as MessageDebugRequest,
+    ChatResponseWithDebug as MessageDebugResponse,
+    EnhancedMessage
+)
+from debug_conversation_manager import DebugConversationManager
 from tool_usage_manager import ToolUsageManager
 from lmstudio_client import lmstudio_client
 from memory_manager import MemoryManager, EnhancedMemoryManager
@@ -120,6 +126,10 @@ app.include_router(power_user_router)
 # Enhanced dependency for getting conversation manager with MCP integration
 def get_enhanced_conversation_manager(db: Session = Depends(get_db)) -> EnhancedConversationManager:
     return EnhancedConversationManager(db)
+
+
+def get_debug_conversation_manager(db: Session = Depends(get_db)) -> DebugConversationManager:
+    return DebugConversationManager(db)
 
 
 def get_memory_manager(db: Session = Depends(get_db)) -> MemoryManager:
@@ -602,6 +612,80 @@ async def chat_stream_with_mcp_tools(
     return StreamingResponse(generate(), media_type="text/plain")
 
 
+# Enhanced debug chat endpoint
+@app.post("/chat/debug", response_model=MessageDebugResponse)
+async def chat_with_debug(
+    request: MessageDebugRequest,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    debug_conv_manager: DebugConversationManager = Depends(get_debug_conversation_manager),
+    enhanced_memory: EnhancedMemoryManager = Depends(get_enhanced_memory_manager)
+):
+    """Enhanced chat endpoint with comprehensive debug information"""
+    try:
+        # Process message with full debug tracking
+        debug_response = await debug_conv_manager.process_message_with_debug(
+            request,
+            lmstudio_client
+        )
+        
+        # Background tasks for memory extraction
+        background_tasks.add_task(
+            extract_and_store_enhanced_memories,
+            request.user_id,
+            request.message,
+            debug_response.message.content,
+            debug_response.conversation_id,
+            enhanced_memory
+        )
+        
+        # Auto-generate conversation title if needed
+        if len(debug_conv_manager.get_conversation_messages(debug_response.conversation_id)) == 2:
+            background_tasks.add_task(
+                auto_generate_title,
+                debug_response.conversation_id,
+                debug_conv_manager
+            )
+        
+        return debug_response
+        
+    except Exception as e:
+        logger.error(f"Debug chat error: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Debug chat processing failed: {str(e)}"
+        )
+
+
+# Conversation debug summary endpoint
+@app.get("/conversations/{conversation_id}/debug")
+async def get_conversation_debug_summary(
+    conversation_id: int,
+    user_id: int,
+    db: Session = Depends(get_db),
+    debug_conv_manager: DebugConversationManager = Depends(get_debug_conversation_manager)
+):
+    """Get debug summary for a conversation"""
+    try:
+        # Verify conversation belongs to user
+        conversation = debug_conv_manager.get_conversation(conversation_id, user_id)
+        if not conversation:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Conversation not found"
+            )
+        
+        debug_summary = await debug_conv_manager.get_conversation_debug_summary(conversation_id)
+        return {"success": True, "data": debug_summary}
+        
+    except Exception as e:
+        logger.error(f"Failed to get conversation debug summary: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get debug summary: {str(e)}"
+        )
+
+
 # Search endpoints (unchanged from original)
 @app.get("/users/{user_id}/conversations/search")
 async def search_conversations(
@@ -738,7 +822,13 @@ async def get_system_status(db: Session = Depends(get_db)):
         ]
 
         # Get tool usage debug info
-        tool_debug_info = tool_manager.get_system_debug_info()
+        try:
+            tool_debug_info = {}
+            if tool_usage_manager:
+                tool_debug_info = tool_usage_manager.get_system_debug_info()
+        except Exception as e:
+            logger.error(f"Failed to get tool debug info: {e}")
+            tool_debug_info = {}
 
         return SystemDebugInfo(
             system_status={
@@ -772,27 +862,42 @@ async def get_system_status(db: Session = Depends(get_db)):
 def health_check():
     """Simple health check endpoint"""
     try:
+        # Get a database session
+        db = next(get_db())
+        
         lmstudio_connected = lmstudio_client.is_connected()
-        total_users = get_db().query(func.count(User.id)).scalar()
-        active_conversations = get_db().query(func.count(Conversation.id)).filter(
+        total_users = db.query(func.count(User.id)).scalar()
+        active_conversations = db.query(func.count(Conversation.id)).filter(
             Conversation.is_active == True
         ).scalar()
 
         # Get MCP status if available
-        if 'mcp_manager' in globals():
-            mcp_status = mcp_manager.get_server_status()
-            mcp_connected_count = sum(1 for s in mcp_status.values() if s["status"] == "connected")
-            mcp_total_count = len(mcp_status)
-            mcp_tools_count = sum(s["tools_count"] for s in mcp_status.values())
-        else:
+        try:
+            from mcp_integration import mcp_manager
+            if mcp_manager:
+                mcp_status = mcp_manager.get_server_status()
+                mcp_connected_count = sum(1 for s in mcp_status.values() if s["status"] == "connected")
+                mcp_total_count = len(mcp_status)
+                mcp_tools_count = sum(s["tools_count"] for s in mcp_status.values())
+            else:
+                mcp_connected_count = 0
+                mcp_total_count = 0
+                mcp_tools_count = 0
+        except Exception as e:
+            logger.error(f"Failed to get MCP status: {e}")
             mcp_connected_count = 0
             mcp_total_count = 0
             mcp_tools_count = 0
+        
+        db.close()
+        
     except Exception as e:
-        logger.error(f"Failed to get MCP status: {e}")
-        mcp_connected_count = 0
-        mcp_total_count = 0
-        mcp_tools_count = 0
+        logger.error(f"Health check error: {e}")
+        return {
+            "status": "unhealthy",
+            "error": str(e),
+            "version": settings.api_version
+        }
 
     return {
         "status": "healthy",
