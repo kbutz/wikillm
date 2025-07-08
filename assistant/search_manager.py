@@ -100,7 +100,7 @@ class SearchManager:
         limit: int = 5
     ) -> List:
         """Enhanced search with multiple strategies"""
-        logger.info(f"Searching conversations for user {user_id} with query: '{query}'")
+        logger.info(f"Searching conversations for user_id {user_id} with query: '{query}'")
         
         try:
             from models import Conversation, ConversationSummary, Message
@@ -156,7 +156,7 @@ class SearchManager:
             
             # Prepare FTS query
             fts_query = self._prepare_fts_query(query)
-            logger.debug(f"FTS query: '{fts_query}'")
+            logger.info(f"FTS query: '{fts_query}'")
             
             # Execute FTS search
             fts_results = self.db.execute(text("""
@@ -185,7 +185,7 @@ class SearchManager:
                 if summary:
                     summaries.append(summary)
             
-            logger.debug(f"FTS search returned {len(summaries)} summaries")
+            logger.info(f"FTS search returned {len(summaries)} summaries")
             return summaries
             
         except Exception as e:
@@ -204,7 +204,7 @@ class SearchManager:
             
             # Extract search terms
             terms = self._extract_search_terms(query)
-            logger.debug(f"Search terms: {terms}")
+            logger.info(f"Search terms: {terms}")
             
             if not terms:
                 return []
@@ -231,7 +231,7 @@ class SearchManager:
                 desc(Conversation.updated_at)
             ).limit(limit).all()
             
-            logger.debug(f"SQL search returned {len(summaries)} summaries")
+            logger.info(f"SQL search returned {len(summaries)} summaries")
             return summaries
             
         except Exception as e:
@@ -287,7 +287,7 @@ class SearchManager:
                     )
                     summaries.append(pseudo_summary)
             
-            logger.debug(f"Title search returned {len(summaries)} summaries")
+            logger.info(f"Title search returned {len(summaries)} summaries")
             return summaries
             
         except Exception as e:
@@ -343,7 +343,7 @@ class SearchManager:
                     )
                     summaries.append(pseudo_summary)
             
-            logger.debug(f"Content search returned {len(summaries)} summaries")
+            logger.info(f"Content search returned {len(summaries)} summaries")
             return summaries
             
         except Exception as e:
@@ -397,7 +397,7 @@ class SearchManager:
         try:
             # Extract keywords from message
             keywords = await self.extract_keywords(message)
-            logger.debug(f"Extracted keywords: {keywords}")
+            logger.info(f"Extracted keywords: {keywords}")
             
             if not keywords:
                 logger.info("No keywords extracted, returning empty results")
@@ -405,7 +405,7 @@ class SearchManager:
             
             # Create search query from keywords
             search_query = " ".join(keywords[:5])  # Use top 5 keywords
-            logger.debug(f"Search query: '{search_query}'")
+            logger.info(f"Search query: '{search_query}'")
             
             # Search for related conversations
             related = await self.search_conversations(user_id, search_query, limit)
@@ -422,7 +422,7 @@ class SearchManager:
         try:
             # Use simple extraction for now
             keywords = self._extract_keywords_enhanced(text)
-            logger.debug(f"Extracted {len(keywords)} keywords: {keywords}")
+            logger.info(f"Extracted {len(keywords)} keywords: {keywords}")
             return keywords
             
         except Exception as e:

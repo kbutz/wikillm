@@ -100,7 +100,7 @@ Extract only facts explicitly stated or strongly implied. Return only the JSON a
                     {"role": "user", "content": extraction_prompt}
                 ],
                 temperature=0.1,  # Low temperature for consistent extraction
-                max_tokens=500
+                max_tokens=5000
             )
 
             content = response["choices"][0]["message"]["content"].strip()
@@ -120,7 +120,8 @@ Extract only facts explicitly stated or strongly implied. Return only the JSON a
 
                 return validated_facts
             else:
-                logger.warning("No valid JSON found in LLM response")
+                logger.warning(f"No valid JSON found in LLM response: {content}")
+                logger.warning(f"No valid JSON found in LLM response: {response}")
                 return []
 
         except Exception as e:

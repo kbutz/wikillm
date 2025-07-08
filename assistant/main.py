@@ -627,15 +627,28 @@ async def search_conversations(
         formatted_results = []
         for summary in results:
             try:
-                formatted_results.append({
-                    "conversation_id": summary.conversation_id,
-                    "title": summary.conversation.title,
-                    "summary": summary.summary,
-                    "keywords": summary.keywords,
-                    "priority_score": getattr(summary, 'priority_score', 0.0),
-                    "created_at": summary.conversation.created_at,
-                    "updated_at": summary.conversation.updated_at
-                })
+                # Check if conversation is not None before accessing its attributes
+                if summary.conversation is not None:
+                    formatted_results.append({
+                        "conversation_id": summary.conversation_id,
+                        "title": summary.conversation.title,
+                        "summary": summary.summary,
+                        "keywords": summary.keywords,
+                        "priority_score": getattr(summary, 'priority_score', 0.0),
+                        "created_at": summary.conversation.created_at,
+                        "updated_at": summary.conversation.updated_at
+                    })
+                else:
+                    # Use default values if conversation is None
+                    formatted_results.append({
+                        "conversation_id": summary.conversation_id,
+                        "title": "Previous conversation",
+                        "summary": summary.summary,
+                        "keywords": summary.keywords,
+                        "priority_score": getattr(summary, 'priority_score', 0.0),
+                        "created_at": None,
+                        "updated_at": None
+                    })
             except Exception as e:
                 logger.warning(f"Could not format search result: {e}")
                 continue

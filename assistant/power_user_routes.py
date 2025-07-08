@@ -38,11 +38,11 @@ def delete_user(user_id: int, db: Session = Depends(get_db)):
             status_code=status.HTTP_404_NOT_FOUND,
             detail="User not found"
         )
-    
+
     # Delete user (cascades to conversations, messages, memories, preferences)
     db.delete(user)
     db.commit()
-    
+
     logger.info(f"Deleted user {user_id} and all associated data")
     return {"success": True, "message": "User deleted successfully"}
 
@@ -56,17 +56,17 @@ def update_user(user_id: int, user_data: dict, db: Session = Depends(get_db)):
             status_code=status.HTTP_404_NOT_FOUND,
             detail="User not found"
         )
-    
+
     # Update allowed fields
     allowed_fields = ['username', 'email', 'full_name']
     for field in allowed_fields:
         if field in user_data:
             setattr(user, field, user_data[field])
-    
+
     user.updated_at = datetime.utcnow()
     db.commit()
     db.refresh(user)
-    
+
     return user
 
 
@@ -79,53 +79,53 @@ def get_comprehensive_user_data(user_id: int, db: Session = Depends(get_db)):
             status_code=status.HTTP_404_NOT_FOUND,
             detail="User not found"
         )
-    
+
     # Get user's data
     memories = db.query(UserMemory).filter(UserMemory.user_id == user_id).all()
     conversations = db.query(Conversation).filter(Conversation.user_id == user_id).all()
     preferences = db.query(UserPreference).filter(UserPreference.user_id == user_id).all()
-    
+
     # Calculate analytics
     total_messages = db.query(func.count(Message.id)).join(Conversation).filter(
         Conversation.user_id == user_id
     ).scalar() or 0
-    
+
     # Average response time from messages
     avg_response_time = db.query(func.avg(Message.processing_time)).join(Conversation).filter(
         Conversation.user_id == user_id,
         Message.role == 'assistant',
         Message.processing_time.isnot(None)
     ).scalar() or 0
-    
+
     # Most active hour (simplified)
     most_active_hour = 10  # Default placeholder
-    
+
     # Topics discussed (from conversation summaries)
     topics_query = db.query(ConversationSummary.keywords).join(Conversation).filter(
         Conversation.user_id == user_id,
         ConversationSummary.keywords.isnot(None)
     ).all()
-    
+
     topics_discussed = []
     for topic_row in topics_query:
         if topic_row.keywords:
             topics_discussed.extend(topic_row.keywords.split(','))
-    
+
     # Get unique topics and limit to top 10
     unique_topics = list(set([t.strip() for t in topics_discussed if t.strip()]))[:10]
-    
+
     # Memory utilization (simple metric)
     memory_utilization = min(len(memories) / 100.0, 1.0)  # Assume 100 memories is full utilization
-    
+
     # Conversation engagement (active conversations / total conversations)
     active_conversations = db.query(func.count(Conversation.id)).filter(
         Conversation.user_id == user_id,
         Conversation.is_active == True
     ).scalar() or 0
-    
+
     total_conversations = len(conversations)
     conversation_engagement = active_conversations / max(total_conversations, 1)
-    
+
     analytics = {
         "totalMessages": total_messages,
         "averageResponseTime": round(avg_response_time, 2),
@@ -144,7 +144,7 @@ def get_comprehensive_user_data(user_id: int, db: Session = Depends(get_db)):
             "weeklyActivity": [0] * 52
         }
     }
-    
+
     return {
         "user": user,
         "memories": memories,
@@ -163,7 +163,7 @@ def get_user_preferences(user_id: int, db: Session = Depends(get_db)):
             status_code=status.HTTP_404_NOT_FOUND,
             detail="User not found"
         )
-    
+
     preferences = db.query(UserPreference).filter(UserPreference.user_id == user_id).all()
     return preferences
 
@@ -177,18 +177,18 @@ def add_user_preference(user_id: int, preference_data: dict, db: Session = Depen
             status_code=status.HTTP_404_NOT_FOUND,
             detail="User not found"
         )
-    
+
     preference = UserPreference(
         user_id=user_id,
         category=preference_data.get('category', 'general'),
         key=preference_data.get('key'),
         value=preference_data.get('value')
     )
-    
+
     db.add(preference)
     db.commit()
     db.refresh(preference)
-    
+
     return preference
 
 
@@ -199,23 +199,23 @@ def update_user_preference(user_id: int, preference_id: int, preference_data: di
         UserPreference.id == preference_id,
         UserPreference.user_id == user_id
     ).first()
-    
+
     if not preference:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Preference not found"
         )
-    
+
     # Update allowed fields
     allowed_fields = ['category', 'key', 'value']
     for field in allowed_fields:
         if field in preference_data:
             setattr(preference, field, preference_data[field])
-    
+
     preference.updated_at = datetime.utcnow()
     db.commit()
     db.refresh(preference)
-    
+
     return preference
 
 
@@ -226,16 +226,16 @@ def delete_user_preference(user_id: int, preference_id: int, db: Session = Depen
         UserPreference.id == preference_id,
         UserPreference.user_id == user_id
     ).first()
-    
+
     if not preference:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Preference not found"
         )
-    
+
     db.delete(preference)
     db.commit()
-    
+
     return {"success": True, "message": "Preference deleted successfully"}
 
 
@@ -248,43 +248,43 @@ def get_user_analytics(user_id: int, db: Session = Depends(get_db)):
             status_code=status.HTTP_404_NOT_FOUND,
             detail="User not found"
         )
-    
+
     # Get conversation metrics
     conversations = db.query(Conversation).filter(Conversation.user_id == user_id).all()
     total_conversations = len(conversations)
     active_conversations = sum(1 for c in conversations if c.is_active)
-    
+
     # Get message metrics
     total_messages = db.query(func.count(Message.id)).join(Conversation).filter(
         Conversation.user_id == user_id
     ).scalar() or 0
-    
+
     # Average messages per conversation
     avg_messages_per_conv = total_messages / max(total_conversations, 1)
-    
+
     # Response time analytics
     avg_response_time = db.query(func.avg(Message.processing_time)).join(Conversation).filter(
         Conversation.user_id == user_id,
         Message.role == 'assistant',
         Message.processing_time.isnot(None)
     ).scalar() or 0
-    
+
     # Memory analytics
     memories = db.query(UserMemory).filter(UserMemory.user_id == user_id).all()
     memory_types = {}
     for memory in memories:
         memory_types[memory.memory_type] = memory_types.get(memory.memory_type, 0) + 1
-    
+
     # Temporal patterns (simplified)
     hourly_activity = [0] * 24
     daily_activity = [0] * 7
     weekly_activity = [0] * 52
-    
+
     # Get message timestamps and calculate patterns
     messages_with_timestamps = db.query(Message.timestamp).join(Conversation).filter(
         Conversation.user_id == user_id
     ).all()
-    
+
     for msg_timestamp in messages_with_timestamps:
         if msg_timestamp.timestamp:
             dt = msg_timestamp.timestamp
@@ -293,7 +293,7 @@ def get_user_analytics(user_id: int, db: Session = Depends(get_db)):
             week_of_year = dt.isocalendar()[1] - 1
             if 0 <= week_of_year < 52:
                 weekly_activity[week_of_year] += 1
-    
+
     return {
         "totalMessages": total_messages,
         "averageResponseTime": round(avg_response_time, 2),
@@ -333,23 +333,36 @@ def get_conversation_summaries(user_id: int, db: Session = Depends(get_db)):
             status_code=status.HTTP_404_NOT_FOUND,
             detail="User not found"
         )
-    
+
     summaries = db.query(ConversationSummary).join(Conversation).filter(
         Conversation.user_id == user_id
     ).all()
-    
+
     result = []
     for summary in summaries:
-        result.append({
-            "conversation_id": summary.conversation_id,
-            "title": summary.conversation.title,
-            "summary": summary.summary,
-            "keywords": summary.keywords.split(',') if summary.keywords else [],
-            "priority_score": summary.priority_score,
-            "created_at": summary.created_at.isoformat(),
-            "updated_at": summary.updated_at.isoformat()
-        })
-    
+        # Check if conversation is not None before accessing its attributes
+        if summary.conversation is not None:
+            result.append({
+                "conversation_id": summary.conversation_id,
+                "title": summary.conversation.title,
+                "summary": summary.summary,
+                "keywords": summary.keywords.split(',') if summary.keywords else [],
+                "priority_score": summary.priority_score,
+                "created_at": summary.created_at.isoformat(),
+                "updated_at": summary.updated_at.isoformat()
+            })
+        else:
+            # Use default values if conversation is None
+            result.append({
+                "conversation_id": summary.conversation_id,
+                "title": "Previous conversation",
+                "summary": summary.summary,
+                "keywords": summary.keywords.split(',') if summary.keywords else [],
+                "priority_score": summary.priority_score,
+                "created_at": summary.created_at.isoformat(),
+                "updated_at": summary.updated_at.isoformat()
+            })
+
     return result
 
 
@@ -362,17 +375,17 @@ def export_user_data(user_id: int, format: str = Query("json", regex="^(json|csv
             status_code=status.HTTP_404_NOT_FOUND,
             detail="User not found"
         )
-    
+
     # Get all user data
     memories = db.query(UserMemory).filter(UserMemory.user_id == user_id).all()
     conversations = db.query(Conversation).filter(Conversation.user_id == user_id).all()
     preferences = db.query(UserPreference).filter(UserPreference.user_id == user_id).all()
-    
+
     # Get all messages for user's conversations
     messages = db.query(Message).join(Conversation).filter(
         Conversation.user_id == user_id
     ).all()
-    
+
     export_data = {
         "user": {
             "id": user.id,
@@ -431,28 +444,28 @@ def export_user_data(user_id: int, format: str = Query("json", regex="^(json|csv
         ],
         "export_timestamp": datetime.utcnow().isoformat()
     }
-    
+
     if format == "json":
         # Create JSON export
         json_data = json.dumps(export_data, indent=2)
-        
+
         def generate():
             yield json_data
-        
+
         return StreamingResponse(
             generate(),
             media_type="application/json",
             headers={"Content-Disposition": f"attachment; filename=user_{user_id}_data.json"}
         )
-    
+
     elif format == "csv":
         # Create CSV export (simplified)
         output = io.StringIO()
-        
+
         # Write conversations to CSV
         writer = csv.writer(output)
         writer.writerow(["Type", "ID", "Title/Key", "Content/Value", "Created", "Updated"])
-        
+
         for conv in conversations:
             writer.writerow([
                 "Conversation",
@@ -462,7 +475,7 @@ def export_user_data(user_id: int, format: str = Query("json", regex="^(json|csv
                 conv.created_at.isoformat(),
                 conv.updated_at.isoformat()
             ])
-        
+
         for memory in memories:
             writer.writerow([
                 f"Memory ({memory.memory_type})",
@@ -472,7 +485,7 @@ def export_user_data(user_id: int, format: str = Query("json", regex="^(json|csv
                 memory.created_at.isoformat(),
                 memory.updated_at.isoformat()
             ])
-        
+
         for pref in preferences:
             writer.writerow([
                 f"Preference ({pref.category})",
@@ -482,13 +495,13 @@ def export_user_data(user_id: int, format: str = Query("json", regex="^(json|csv
                 pref.created_at.isoformat(),
                 pref.updated_at.isoformat()
             ])
-        
+
         csv_data = output.getvalue()
         output.close()
-        
+
         def generate():
             yield csv_data
-        
+
         return StreamingResponse(
             generate(),
             media_type="text/csv",
@@ -505,7 +518,7 @@ def switch_active_user(user_id: int, db: Session = Depends(get_db)):
             status_code=status.HTTP_404_NOT_FOUND,
             detail="User not found"
         )
-    
+
     # In a real implementation, this would update session state
     # For now, we'll just return success
     return {"success": True, "message": f"Switched to user {user.username}"}
@@ -525,9 +538,9 @@ def search_user_data(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="User not found"
         )
-    
+
     results = {"memories": [], "conversations": [], "preferences": [], "total_results": 0}
-    
+
     if type in [None, "all", "memories"]:
         # Search memories
         memory_results = db.query(UserMemory).filter(
@@ -538,7 +551,7 @@ def search_user_data(
             )
         ).all()
         results["memories"] = memory_results
-    
+
     if type in [None, "all", "conversations"]:
         # Search conversations
         conversation_results = db.query(Conversation).filter(
@@ -546,7 +559,7 @@ def search_user_data(
             Conversation.title.ilike(f"%{q}%")
         ).all()
         results["conversations"] = conversation_results
-    
+
     if type in [None, "all", "preferences"]:
         # Search preferences
         preference_results = db.query(UserPreference).filter(
@@ -557,9 +570,9 @@ def search_user_data(
             )
         ).all()
         results["preferences"] = preference_results
-    
+
     results["total_results"] = len(results["memories"]) + len(results["conversations"]) + len(results["preferences"])
-    
+
     return results
 
 
@@ -569,19 +582,19 @@ def get_system_overview(db: Session = Depends(get_db)):
     total_users = db.query(func.count(User.id)).scalar()
     total_conversations = db.query(func.count(Conversation.id)).scalar()
     total_memories = db.query(func.count(UserMemory.id)).scalar()
-    
+
     # Active users in last 7 days (simplified)
     week_ago = datetime.utcnow() - timedelta(days=7)
     active_users_week = db.query(func.count(func.distinct(Conversation.user_id))).filter(
         Conversation.updated_at >= week_ago
     ).scalar()
-    
+
     # Active users in last 30 days
     month_ago = datetime.utcnow() - timedelta(days=30)
     active_users_month = db.query(func.count(func.distinct(Conversation.user_id))).filter(
         Conversation.updated_at >= month_ago
     ).scalar()
-    
+
     return {
         "total_users": total_users,
         "total_conversations": total_conversations,
