@@ -516,6 +516,10 @@ def get_debug_scripts() -> List[DebugScript]:
             "description": "Verify that all memory aspects are working correctly",
             "type": "verify"
         },
+        "enhanced_verify_memory_system.py": {
+            "description": "Verify that all memory aspects are working correctly",
+            "type": "verify"
+        },
         "verify_admin_implementation.py": {
             "description": "Verify admin functionality implementation",
             "type": "verify"
