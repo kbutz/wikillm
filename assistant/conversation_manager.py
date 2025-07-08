@@ -11,6 +11,7 @@ from models import Conversation, Message, User, ConversationSummary
 from schemas import ConversationCreate, MessageCreate, MessageRole
 from memory_manager import MemoryManager
 from lmstudio_client import lmstudio_client
+from llm_response_processor import LLMResponseProcessor
 import asyncio
 
 logger = logging.getLogger(__name__)
@@ -22,6 +23,7 @@ class ConversationManager:
     def __init__(self, db: Session):
         self.db = db
         self.memory_manager = MemoryManager(db)
+        self.response_processor = LLMResponseProcessor()
 
     def create_conversation(self, user_id: int, title: str = None) -> Conversation:
         """Create a new conversation"""
@@ -187,12 +189,12 @@ class ConversationManager:
                                 # Check if conversation is not None before accessing title
                                 if conv_summary.conversation is not None:
                                     historical_parts.append(
-                                        f"• {conv_summary.conversation.title}: {conv_summary.summary[:200]}..."
+                                        f"• {conv_summary.conversation.title}: {conv_summary.summary[:1000]}..."
                                     )
                                 else:
                                     # Use a default title if conversation is None
                                     historical_parts.append(
-                                        f"• Previous conversation: {conv_summary.summary[:200]}..."
+                                        f"• Previous conversation: {conv_summary.summary[:1000]}..."
                                     )
 
                         if historical_parts:
@@ -421,8 +423,12 @@ Keep the summary under 200 words and make it useful for future reference."""
         conversation_parts = []
         for msg in relevant_messages:
             role_label = "User" if msg.role == MessageRole.USER else "Assistant"
+            
+            # Remove thinking tags from content before summarization
+            content = self.response_processor.process_summary_text(msg.content)
+            
             # Truncate very long messages
-            content = msg.content[:500] + "..." if len(msg.content) > 500 else msg.content
+            content = content[:500] + "..." if len(content) > 500 else content
             conversation_parts.append(f"{role_label}: {content}")
 
         return "\n\n".join(conversation_parts)

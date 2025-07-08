@@ -13,6 +13,7 @@ from typing import List, Optional, Dict, Any, Tuple
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, or_, desc, func, text
 from datetime import datetime, timedelta
+from llm_response_processor import LLMResponseProcessor
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +24,7 @@ class SearchManager:
     def __init__(self, db: Session):
         self.db = db
         self.fts_available = self._check_fts_availability()
+        self.response_processor = LLMResponseProcessor()
         logger.info(f"SearchManager initialized with FTS: {self.fts_available}")
 
     def _check_fts_availability(self) -> bool:
@@ -520,8 +522,12 @@ class SearchManager:
             elif message_count >= 5:
                 priority_score += 0.1
             
-            # Content quality bonus
-            full_text = " ".join([msg.content.lower() for msg in messages])
+            # Content quality bonus (remove thinking tags first)
+            processed_messages = [
+                self.response_processor.process_summary_text(msg.content).lower() 
+                for msg in messages
+            ]
+            full_text = " ".join(processed_messages)
             
             # Technical content bonus
             technical_keywords = [

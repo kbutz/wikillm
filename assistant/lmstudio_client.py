@@ -6,6 +6,7 @@ import json
 import logging
 from typing import Dict, Any, Optional, AsyncGenerator, List
 from config import settings
+from llm_response_processor import LLMResponseProcessor, ThinkingModelHandler
 
 logger = logging.getLogger(__name__)
 
@@ -18,6 +19,10 @@ class LMStudioClient:
         self.model = settings.lmstudio_model
         self.timeout = settings.lmstudio_timeout
         self.client = httpx.AsyncClient(timeout=self.timeout)
+        
+        # Initialize thinking model handler
+        self.thinking_handler = ThinkingModelHandler(enable_thinking_logs=False)
+        self.response_processor = LLMResponseProcessor()
     
     async def health_check(self) -> bool:
         """Check if LMStudio is running and accessible"""
@@ -79,7 +84,12 @@ class LMStudioClient:
             json=payload
         )
         response.raise_for_status()
-        return response.json()
+        raw_response = response.json()
+        
+        # Process response to remove thinking tags
+        processed_response = self.response_processor.process_chat_response(raw_response)
+        
+        return processed_response
     
     async def _stream_completion(self, payload: Dict[str, Any]) -> AsyncGenerator[Dict[str, Any], None]:
         """Handle streaming completion"""
@@ -90,6 +100,9 @@ class LMStudioClient:
         ) as response:
             response.raise_for_status()
             
+            in_thinking_block = False
+            accumulated_content = ""
+            
             async for line in response.aiter_lines():
                 if line.startswith("data: "):
                     data = line[6:]  # Remove "data: " prefix
@@ -98,9 +111,68 @@ class LMStudioClient:
                     
                     try:
                         chunk = json.loads(data)
-                        yield chunk
+                        
+                        # Process chunk to handle thinking tags
+                        processed_chunk = self._process_streaming_chunk(chunk)
+                        
+                        if processed_chunk is not None:
+                            yield processed_chunk
+                            
                     except json.JSONDecodeError:
                         continue
+    
+    def _process_streaming_chunk(self, chunk: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Process a streaming chunk to handle thinking tags"""
+        if not chunk or "choices" not in chunk:
+            return chunk
+            
+        processed_chunk = chunk.copy()
+        
+        for choice in processed_chunk.get("choices", []):
+            delta = choice.get("delta", {})
+            content = delta.get("content", "")
+            
+            if content:
+                # Check if this chunk contains thinking tag markers
+                if "<think>" in content or "</think>" in content:
+                    # Remove thinking tags from this chunk
+                    cleaned_content = self.response_processor.remove_thinking_tags(content)
+                    delta["content"] = cleaned_content
+                    
+                    # If the cleaned content is empty, skip this chunk
+                    if not cleaned_content.strip():
+                        return None
+                        
+                # Simple heuristic: if content looks like thinking content, skip it
+                elif self._looks_like_thinking_content(content):
+                    return None
+                    
+        return processed_chunk
+    
+    def _looks_like_thinking_content(self, content: str) -> bool:
+        """Simple heuristic to detect thinking content in streaming"""
+        # This is a simple heuristic - in practice, you might want more sophisticated detection
+        thinking_phrases = [
+            "let me think", "i need to", "let me analyze", "thinking about",
+            "i should", "let me consider", "i'm thinking", "hmm", "well"
+        ]
+        
+        content_lower = content.lower().strip()
+        
+        # Skip very short content that might be thinking
+        if len(content_lower) < 10 and any(phrase in content_lower for phrase in thinking_phrases):
+            return True
+            
+        return False
+    
+    def is_connected(self) -> bool:
+        """Check if client is connected (for backward compatibility)"""
+        # This is a simple check - in a real implementation you might want to cache this
+        try:
+            import asyncio
+            return asyncio.create_task(self.health_check()).result()
+        except:
+            return False
     
     async def create_embedding(self, text: str) -> List[float]:
         """Create text embedding (if supported by the model)"""

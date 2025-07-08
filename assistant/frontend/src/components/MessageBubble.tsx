@@ -45,6 +45,15 @@ function CollapsibleSection({ title, children, defaultOpen = false, icon, badge 
 }
 
 function IntermediaryStepComponent({ step }: { step: IntermediaryStep }) {
+  // Format JSON with proper line breaks for better readability
+  const formatJsonWithLineBreaks = (obj: any): string => {
+    // First, stringify the object with indentation
+    const jsonString = JSON.stringify(obj, null, 2);
+
+    // Replace escaped newlines with actual newlines in content fields
+    return jsonString.replace(/(\\n)/g, '\n');
+  };
+
   const getStepIcon = (stepType: string) => {
     switch (stepType) {
       case 'tool_call':
@@ -97,8 +106,8 @@ function IntermediaryStepComponent({ step }: { step: IntermediaryStep }) {
           <summary className="text-xs text-gray-500 cursor-pointer hover:text-gray-700">
             View step data
           </summary>
-          <pre className="text-xs bg-gray-100 p-2 mt-1 rounded overflow-x-auto">
-            {JSON.stringify(step.data, null, 2)}
+          <pre className="text-xs bg-gray-100 p-2 mt-1 rounded overflow-x-auto whitespace-pre-wrap">
+            {formatJsonWithLineBreaks(step.data)}
           </pre>
         </details>
       )}
@@ -107,6 +116,15 @@ function IntermediaryStepComponent({ step }: { step: IntermediaryStep }) {
 }
 
 function ToolCallComponent({ toolCall }: { toolCall: ToolCall }) {
+  // Format JSON with proper line breaks for better readability
+  const formatJsonWithLineBreaks = (obj: any): string => {
+    // First, stringify the object with indentation
+    const jsonString = JSON.stringify(obj, null, 2);
+
+    // Replace escaped newlines with actual newlines in content fields
+    return jsonString.replace(/(\\n)/g, '\n');
+  };
+
   return (
     <div className="border border-blue-200 rounded-lg p-3 mb-2 bg-blue-50">
       <div className="flex items-center gap-2 mb-2">
@@ -123,8 +141,8 @@ function ToolCallComponent({ toolCall }: { toolCall: ToolCall }) {
         <summary className="text-xs text-gray-600 cursor-pointer hover:text-gray-800">
           View arguments
         </summary>
-        <pre className="text-xs bg-white p-2 mt-1 rounded border overflow-x-auto">
-          {JSON.stringify(toolCall.arguments, null, 2)}
+        <pre className="text-xs bg-white p-2 mt-1 rounded border overflow-x-auto whitespace-pre-wrap">
+          {formatJsonWithLineBreaks(toolCall.arguments)}
         </pre>
       </details>
     </div>
@@ -132,6 +150,15 @@ function ToolCallComponent({ toolCall }: { toolCall: ToolCall }) {
 }
 
 function ToolResultComponent({ toolResult }: { toolResult: ToolResult }) {
+  // Format JSON with proper line breaks for better readability
+  const formatJsonWithLineBreaks = (obj: any): string => {
+    // First, stringify the object with indentation
+    const jsonString = JSON.stringify(obj, null, 2);
+
+    // Replace escaped newlines with actual newlines in content fields
+    return jsonString.replace(/(\\n)/g, '\n');
+  };
+
   return (
     <div className={`border rounded-lg p-3 mb-2 ${
       toolResult.success ? 'border-green-200 bg-green-50' : 'border-red-200 bg-red-50'
@@ -161,8 +188,8 @@ function ToolResultComponent({ toolResult }: { toolResult: ToolResult }) {
         <summary className="text-xs text-gray-600 cursor-pointer hover:text-gray-800">
           View result
         </summary>
-        <pre className="text-xs bg-white p-2 mt-1 rounded border overflow-x-auto">
-          {JSON.stringify(toolResult.result, null, 2)}
+        <pre className="text-xs bg-white p-2 mt-1 rounded border overflow-x-auto whitespace-pre-wrap">
+          {formatJsonWithLineBreaks(toolResult.result)}
         </pre>
       </details>
     </div>
@@ -170,6 +197,15 @@ function ToolResultComponent({ toolResult }: { toolResult: ToolResult }) {
 }
 
 function LLMRequestComponent({ llmRequest }: { llmRequest: LLMRequest }) {
+  // Format JSON with proper line breaks for better readability
+  const formatJsonWithLineBreaks = (obj: any): string => {
+    // First, stringify the object with indentation
+    const jsonString = JSON.stringify(obj, null, 2);
+
+    // Replace escaped newlines with actual newlines in content fields
+    return jsonString.replace(/(\\n)/g, '\n');
+  };
+
   return (
     <div className="border border-purple-200 rounded-lg p-3 bg-purple-50">
       <div className="grid grid-cols-2 gap-4 mb-3">
@@ -195,8 +231,8 @@ function LLMRequestComponent({ llmRequest }: { llmRequest: LLMRequest }) {
         <summary className="text-xs text-gray-600 cursor-pointer hover:text-gray-800">
           View full request ({llmRequest.messages.length} messages)
         </summary>
-        <pre className="text-xs bg-white p-2 mt-1 rounded border overflow-x-auto max-h-64">
-          {JSON.stringify(llmRequest, null, 2)}
+        <pre className="text-xs bg-white p-2 mt-1 rounded border overflow-x-auto max-h-64 whitespace-pre-wrap">
+          {formatJsonWithLineBreaks(llmRequest)}
         </pre>
       </details>
     </div>
@@ -204,6 +240,15 @@ function LLMRequestComponent({ llmRequest }: { llmRequest: LLMRequest }) {
 }
 
 function LLMResponseComponent({ llmResponse }: { llmResponse: LLMResponse }) {
+  // Format JSON with proper line breaks for better readability
+  const formatJsonWithLineBreaks = (obj: any): string => {
+    // First, stringify the object with indentation
+    const jsonString = JSON.stringify(obj, null, 2);
+
+    // Replace escaped newlines with actual newlines in content fields
+    return jsonString.replace(/(\\n)/g, '\n');
+  };
+
   return (
     <div className="border border-purple-200 rounded-lg p-3 bg-purple-50">
       <div className="grid grid-cols-2 gap-4 mb-3">
@@ -223,8 +268,8 @@ function LLMResponseComponent({ llmResponse }: { llmResponse: LLMResponse }) {
         <summary className="text-xs text-gray-600 cursor-pointer hover:text-gray-800">
           View full response
         </summary>
-        <pre className="text-xs bg-white p-2 mt-1 rounded border overflow-x-auto max-h-64">
-          {JSON.stringify(llmResponse.response, null, 2)}
+        <pre className="text-xs bg-white p-2 mt-1 rounded border overflow-x-auto max-h-64 whitespace-pre-wrap">
+          {formatJsonWithLineBreaks(llmResponse.response)}
         </pre>
       </details>
     </div>
