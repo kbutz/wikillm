@@ -37,6 +37,9 @@ from mcp_integration import (
     get_mcp_tools_for_assistant, handle_mcp_tool_call
 )
 
+# Admin routes import
+from admin_routes import admin_router
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -92,6 +95,9 @@ app.add_middleware(
 
 # Register MCP routes
 register_mcp_routes(app)
+
+# Register admin routes
+app.include_router(admin_router)
 
 
 # Enhanced dependency for getting conversation manager with MCP integration

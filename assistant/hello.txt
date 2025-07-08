@@ -1,0 +1,3 @@
+Gandalf:
+'The clouds look heavy, Bilbo. A storm may come.'
+Bilbo: 'Ah, but the tea is warm, and the fire's bright. What more could one need?'

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Send, MessageSquare, Plus, Trash2, User, Settings, Brain, Clock, Database } from 'lucide-react';
+import { Send, MessageSquare, Plus, Trash2, User, Settings, Brain, Clock, Database, Shield } from 'lucide-react';
 import { ApiService } from '../services/api';
 import { User as UserType, Message, Conversation, UserMemory } from '../types';
 import MessageBubble from './MessageBubble';
@@ -11,7 +11,11 @@ import MCPDebugPanel from './MCPDebugPanel';
 
 const api = new ApiService();
 
-export default function AIAssistantApp() {
+interface AIAssistantAppProps {
+  onAdminAccess: () => void;
+}
+
+export default function AIAssistantApp({ onAdminAccess }: AIAssistantAppProps) {
   const [currentUser, setCurrentUser] = useState<UserType | null>(null);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeConversation, setActiveConversation] = useState<Conversation | null>(null);
@@ -197,23 +201,32 @@ export default function AIAssistantApp() {
         <div className="p-4 border-b border-gray-200">
           <div className="flex items-center justify-between mb-4">
             <h1 className="text-xl font-bold text-gray-900">AI Assistant</h1>
-            <button
-              onClick={() => {
-                if (currentUser) loadUserMemories(currentUser.id);
-                setShowMemories(!showMemories);
-              }}
-              className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
-              title="View Memories"
-            >
-              <Brain className="w-5 h-5 text-gray-600" />
-            </button>
-            <button
-              onClick={() => setShowDebugPanel(true)}
-              className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
-              title="Debug Panel"
-            >
-              <Settings className="w-5 h-5 text-gray-600" />
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => {
+                  if (currentUser) loadUserMemories(currentUser.id);
+                  setShowMemories(!showMemories);
+                }}
+                className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
+                title="View Memories"
+              >
+                <Brain className="w-5 h-5 text-gray-600" />
+              </button>
+              <button
+                onClick={() => setShowDebugPanel(true)}
+                className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
+                title="Debug Panel"
+              >
+                <Settings className="w-5 h-5 text-gray-600" />
+              </button>
+              <button
+                onClick={onAdminAccess}
+                className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
+                title="Admin Dashboard"
+              >
+                <Shield className="w-5 h-5 text-gray-600" />
+              </button>
+            </div>
           </div>
 
           <button
