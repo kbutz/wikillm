@@ -63,7 +63,7 @@ class EnhancedMemoryManager:
         return []
     
     async def _extract_facts_with_llm(self, user_message: str, assistant_response: str) -> List[Dict[str, Any]]:
-        """Use LLM to extract facts and relationships"""
+        """Use LLM to extract facts and relationships with enhanced validation"""
         
         extraction_prompt = f"""Extract important facts and relationships from this conversation exchange.
 Focus on:
@@ -76,15 +76,19 @@ Focus on:
 User said: {user_message}
 Assistant responded: {assistant_response}
 
-Return a JSON array of facts. Each fact should have:
+Return a JSON array of facts. Each fact MUST have:
 - key: a searchable identifier (e.g., "pet_dog_name", "favorite_food", "skill_programming")
-- value: the fact itself (e.g., "Crosby", "pizza", "Python expert")
-- confidence: 0.0 to 1.0
+- value: the fact itself as a STRING (e.g., "Crosby", "pizza", "Python expert")
+- confidence: a number between 0.0 and 1.0
+
+IMPORTANT: The "value" field must ALWAYS be a string. Convert numbers, booleans, etc. to strings.
 
 Example format:
 [
   {{"key": "pet_dog_name", "value": "Crosby", "confidence": 0.95}},
-  {{"key": "dog_breed", "value": "Golden Retriever", "confidence": 0.8}}
+  {{"key": "dog_breed", "value": "Golden Retriever", "confidence": 0.8}},
+  {{"key": "user_age", "value": "25", "confidence": 0.9}},
+  {{"key": "likes_coffee", "value": "true", "confidence": 0.7}}
 ]
 
 Extract only facts explicitly stated or strongly implied. Return only the JSON array, no other text."""
@@ -92,7 +96,7 @@ Extract only facts explicitly stated or strongly implied. Return only the JSON a
         try:
             response = await lmstudio_client.chat_completion(
                 messages=[
-                    {"role": "system", "content": "You are a fact extraction system. Extract only clearly stated facts."},
+                    {"role": "system", "content": "You are a fact extraction system. Extract only clearly stated facts. Always ensure the 'value' field is a string."},
                     {"role": "user", "content": extraction_prompt}
                 ],
                 temperature=0.1,  # Low temperature for consistent extraction
@@ -105,7 +109,16 @@ Extract only facts explicitly stated or strongly implied. Return only the JSON a
             json_match = re.search(r'\[.*\]', content, re.DOTALL)
             if json_match:
                 facts = json.loads(json_match.group())
-                return facts
+                
+                # Validate and clean facts
+                validated_facts = []
+                for fact in facts:
+                    if self._validate_fact(fact):
+                        validated_facts.append(fact)
+                    else:
+                        logger.warning(f"Invalid fact filtered out: {fact}")
+                
+                return validated_facts
             else:
                 logger.warning("No valid JSON found in LLM response")
                 return []
@@ -113,6 +126,35 @@ Extract only facts explicitly stated or strongly implied. Return only the JSON a
         except Exception as e:
             logger.error(f"Failed to extract facts with LLM: {e}")
             return []
+    
+    def _validate_fact(self, fact: Dict[str, Any]) -> bool:
+        """Validate a fact dictionary and fix common issues"""
+        try:
+            # Check required fields
+            if not all(key in fact for key in ['key', 'value', 'confidence']):
+                return False
+            
+            # Ensure key is a string
+            if not isinstance(fact['key'], str) or not fact['key'].strip():
+                return False
+            
+            # Ensure confidence is a number between 0 and 1
+            if not isinstance(fact['confidence'], (int, float)) or not 0 <= fact['confidence'] <= 1:
+                return False
+            
+            # Convert value to string if it isn't already
+            if not isinstance(fact['value'], str):
+                fact['value'] = str(fact['value'])
+            
+            # Ensure value is not empty
+            if not fact['value'].strip():
+                return False
+            
+            return True
+            
+        except Exception as e:
+            logger.warning(f"Fact validation failed: {e}")
+            return False
     
     async def search_memories_semantic(
         self, 

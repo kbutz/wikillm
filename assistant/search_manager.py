@@ -16,17 +16,75 @@ class SearchManager:
     
     def __init__(self, db: Session):
         self.db = db
-        self._ensure_fts_table()
+        self.fts_available = self._ensure_fts_table()
     
     def _ensure_fts_table(self):
         """Ensure FTS virtual table exists for full-text search"""
         try:
-            # Simple check if FTS table exists
+            # Check if FTS table exists
             result = self.db.execute(text("SELECT name FROM sqlite_master WHERE type='table' AND name='conversation_summaries_fts'")).fetchone()
             if not result:
-                logger.info("FTS table not found, will use fallback search")
+                logger.warning("FTS table not found, will use fallback search")
+                return False
+            
+            # Test FTS table functionality
+            test_result = self.db.execute(text("SELECT COUNT(*) FROM conversation_summaries_fts LIMIT 1")).fetchone()
+            if test_result:
+                logger.info("FTS table is functional")
+                return True
+            else:
+                logger.warning("FTS table exists but is not functional")
+                return False
+                
         except Exception as e:
             logger.warning(f"Could not check FTS table: {e}")
+            return False
+    
+    async def _search_conversations_fts(
+        self,
+        user_id: int,
+        query: str,
+        limit: int = 5
+    ) -> List:
+        """Search conversations using FTS"""
+        try:
+            from models import Conversation, ConversationSummary
+            
+            # Prepare FTS query (escape special characters)
+            fts_query = query.replace('"', '""').replace("'", "''")
+            
+            # Use FTS to find matching summaries
+            fts_results = self.db.execute(text("""
+                SELECT cs.id, cs.conversation_id, cs.summary, cs.keywords, cs.priority_score,
+                       bm25(conversation_summaries_fts) as rank
+                FROM conversation_summaries_fts 
+                JOIN conversation_summaries cs ON cs.id = conversation_summaries_fts.rowid
+                JOIN conversations c ON c.id = cs.conversation_id
+                WHERE conversation_summaries_fts MATCH :query
+                  AND c.user_id = :user_id
+                  AND c.is_active = 1
+                ORDER BY rank, cs.priority_score DESC
+                LIMIT :limit
+            """), {
+                "query": fts_query,
+                "user_id": user_id,
+                "limit": limit
+            }).fetchall()
+            
+            # Convert to ConversationSummary objects
+            summaries = []
+            for row in fts_results:
+                summary = self.db.query(ConversationSummary).filter(
+                    ConversationSummary.id == row.id
+                ).first()
+                if summary:
+                    summaries.append(summary)
+            
+            return summaries
+            
+        except Exception as e:
+            logger.error(f"FTS search failed: {e}")
+            raise
     
     async def search_conversations(
         self,
@@ -34,20 +92,31 @@ class SearchManager:
         query: str,
         limit: int = 5
     ) -> List:
-        """Search conversations using fallback method"""
+        """Search conversations using FTS when available, fallback to LIKE search"""
         try:
             from models import Conversation, ConversationSummary
             
-            # Use simple LIKE search as fallback
+            # Try FTS search first
+            try:
+                fts_results = await self._search_conversations_fts(user_id, query, limit)
+                if fts_results:
+                    logger.info(f"Found {len(fts_results)} conversations using FTS for query: {query}")
+                    return fts_results
+            except Exception as e:
+                logger.warning(f"FTS search failed, falling back to LIKE search: {e}")
+            
+            # Fallback to LIKE search
             query_terms = query.lower().split()
             
             # Build OR conditions for each term
             conditions = []
             for term in query_terms[:5]:  # Limit to first 5 terms
-                conditions.extend([
-                    ConversationSummary.summary.ilike(f"%{term}%"),
-                    Conversation.title.ilike(f"%{term}%")
-                ])
+                if len(term) > 2:  # Skip very short terms
+                    conditions.extend([
+                        ConversationSummary.summary.ilike(f"%{term}%"),
+                        ConversationSummary.keywords.ilike(f"%{term}%"),
+                        Conversation.title.ilike(f"%{term}%")
+                    ])
             
             if not conditions:
                 return []
@@ -58,9 +127,12 @@ class SearchManager:
                     Conversation.is_active == True,
                     or_(*conditions)
                 )
-            ).order_by(desc(Conversation.updated_at)).limit(limit).all()
+            ).order_by(
+                desc(ConversationSummary.priority_score),
+                desc(Conversation.updated_at)
+            ).limit(limit).all()
             
-            logger.info(f"Found {len(summaries)} conversations for query: {query}")
+            logger.info(f"Found {len(summaries)} conversations using LIKE search for query: {query}")
             return summaries
             
         except Exception as e:
