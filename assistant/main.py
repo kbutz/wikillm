@@ -27,6 +27,11 @@ from schemas import (
     UserMemoryCreate, UserMemory as UserMemorySchema,
     SystemStatus, ErrorResponse, MemoryType
 )
+from enhanced_schemas import (
+    ToolUsageTrace, ToolUsageAnalytics, SystemDebugInfo,
+    ChatRequestWithDebug, ChatResponseWithDebug
+)
+from tool_usage_manager import ToolUsageManager
 from lmstudio_client import lmstudio_client
 from memory_manager import MemoryManager, EnhancedMemoryManager
 from enhanced_conversation_manager import EnhancedConversationManager
@@ -39,6 +44,12 @@ from mcp_integration import (
 
 # Admin routes import
 from admin_routes import admin_router
+
+# Debug routes import
+from debug_routes import debug_router
+
+# Power user routes import
+from power_user_routes import power_user_router
 
 # Configure logging
 logging.basicConfig(
@@ -99,6 +110,12 @@ register_mcp_routes(app)
 # Register admin routes
 app.include_router(admin_router)
 
+# Register debug routes
+app.include_router(debug_router)
+
+# Register power user routes
+app.include_router(power_user_router)
+
 
 # Enhanced dependency for getting conversation manager with MCP integration
 def get_enhanced_conversation_manager(db: Session = Depends(get_db)) -> EnhancedConversationManager:
@@ -111,6 +128,18 @@ def get_memory_manager(db: Session = Depends(get_db)) -> MemoryManager:
 
 def get_enhanced_memory_manager(db: Session = Depends(get_db)) -> EnhancedMemoryManager:
     return EnhancedMemoryManager(db)
+
+
+# Global tool usage manager
+tool_usage_manager = None
+
+
+def get_tool_usage_manager(db: Session = Depends(get_db)) -> ToolUsageManager:
+    """Get tool usage manager instance"""
+    global tool_usage_manager
+    if tool_usage_manager is None:
+        tool_usage_manager = ToolUsageManager(db)
+    return tool_usage_manager
 
 
 # User management endpoints (unchanged)
@@ -664,7 +693,80 @@ async def get_system_status(db: Session = Depends(get_db)):
     # Get MCP status
     try:
         from mcp_integration import mcp_manager
-        if mcp_manager:
+        # Get MCP status
+        try:
+            from mcp_integration import mcp_manager
+            if mcp_manager:
+                mcp_status = mcp_manager.get_server_status()
+                mcp_servers = [
+                    {
+                        "server_id": server_id,
+                        "status": status_info["status"],
+                        "tools_count": status_info["tools_count"],
+                        "last_seen": status_info.get("last_seen", "unknown")
+                    }
+                    for server_id, status_info in mcp_status.items()
+                ]
+            else:
+                mcp_servers = []
+        except Exception as e:
+            logger.error(f"Failed to get MCP status: {e}")
+            mcp_servers = []
+
+        # Get available tools
+        available_tools = get_mcp_tools_for_assistant()
+        tool_list = [
+            {
+                "name": tool.get("function", {}).get("name", "unknown"),
+                "server_id": tool.get("mcp_server_id", "unknown"),
+                "description": tool.get("function", {}).get("description", "")
+            }
+            for tool in available_tools
+        ]
+
+        # Get tool usage debug info
+        tool_debug_info = tool_manager.get_system_debug_info()
+
+        return SystemDebugInfo(
+            system_status={
+                "lmstudio_connected": lmstudio_connected,
+                "database_connected": True,
+                "total_users": total_users,
+                "active_conversations": active_conversations,
+                "api_version": settings.api_version
+            },
+            mcp_servers=mcp_servers,
+            available_tools=tool_list,
+            memory_stats=tool_debug_info,
+            performance_metrics={
+                "traces_per_minute": 0,  # TODO: Calculate actual metrics
+                "average_response_time": 0,
+                "success_rate": 0
+            },
+            recent_errors=[]  # TODO: Add error tracking
+        )
+
+    except Exception as e:
+        logger.error(f"Failed to get system debug info: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get debug info: {str(e)}"
+        )
+
+
+# Health check endpoint
+@app.get("/health")
+def health_check():
+    """Simple health check endpoint"""
+    try:
+        lmstudio_connected = lmstudio_client.is_connected()
+        total_users = get_db().query(func.count(User.id)).scalar()
+        active_conversations = get_db().query(func.count(Conversation.id)).filter(
+            Conversation.is_active == True
+        ).scalar()
+
+        # Get MCP status if available
+        if 'mcp_manager' in globals():
             mcp_status = mcp_manager.get_server_status()
             mcp_connected_count = sum(1 for s in mcp_status.values() if s["status"] == "connected")
             mcp_total_count = len(mcp_status)
@@ -735,12 +837,6 @@ async def create_conversation_summary_task(conversation_id: int, conv_manager: E
     except Exception as e:
         logger.error(f"Failed to create conversation summary: {e}")
 
-
-# Health check endpoint
-@app.get("/health")
-def health_check():
-    """Simple health check endpoint"""
-    return {"status": "healthy", "timestamp": time.time()}
 
 
 if __name__ == "__main__":

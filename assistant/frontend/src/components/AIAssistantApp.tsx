@@ -13,9 +13,10 @@ const api = new ApiService();
 
 interface AIAssistantAppProps {
   onAdminAccess: () => void;
+  onPowerUserAccess: () => void;
 }
 
-export default function AIAssistantApp({ onAdminAccess }: AIAssistantAppProps) {
+export default function AIAssistantApp({ onAdminAccess, onPowerUserAccess }: AIAssistantAppProps) {
   const [currentUser, setCurrentUser] = useState<UserType | null>(null);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeConversation, setActiveConversation] = useState<Conversation | null>(null);
@@ -39,6 +40,14 @@ export default function AIAssistantApp({ onAdminAccess }: AIAssistantAppProps) {
     } catch (error) {
       console.error('Failed to create user:', error);
     }
+  };
+
+  // Select existing user
+  const handleUserSelect = (user: UserType) => {
+    setCurrentUser(user);
+    setShowUserSetup(false);
+    localStorage.setItem('currentUserId', user.id.toString());
+    loadConversations(user.id);
   };
 
   // Load conversations
@@ -190,7 +199,7 @@ export default function AIAssistantApp({ onAdminAccess }: AIAssistantAppProps) {
   }, [messages]);
 
   if (showUserSetup) {
-    return <UserSetupModal onSetup={handleUserSetup} />;
+    return <UserSetupModal onSetup={handleUserSetup} onSelectUser={handleUserSelect} />;
   }
 
   return (
@@ -218,6 +227,13 @@ export default function AIAssistantApp({ onAdminAccess }: AIAssistantAppProps) {
                 title="Debug Panel"
               >
                 <Settings className="w-5 h-5 text-gray-600" />
+              </button>
+              <button
+                onClick={onPowerUserAccess}
+                className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
+                title="Power User Console"
+              >
+                <User className="w-5 h-5 text-gray-600" />
               </button>
               <button
                 onClick={onAdminAccess}

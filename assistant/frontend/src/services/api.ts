@@ -36,6 +36,16 @@ export class ApiService {
     return response.json();
   }
 
+  async listUsers(): Promise<User[]> {
+    const response = await fetch(`${this.baseUrl}/users/`);
+
+    if (!response.ok) {
+      throw new Error('Failed to list users');
+    }
+
+    return response.json();
+  }
+
   async getUserConversations(userId: number): Promise<Conversation[]> {
     const response = await fetch(`${this.baseUrl}/users/${userId}/conversations`);
 
