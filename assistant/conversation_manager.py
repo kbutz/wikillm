@@ -291,7 +291,9 @@ class ConversationManager:
                 max_tokens=50
             )
 
-            title = response["choices"][0]["message"]["content"].strip()
+            # Remove thinking tags from title response
+            raw_title = response["choices"][0]["message"]["content"].strip()
+            title = self.response_processor.process_summary_text(raw_title)
 
             # Clean up the title
             title = title.replace('"', '').replace("'", "")
@@ -382,7 +384,9 @@ Keep the summary under 200 words and make it useful for future reference."""
                 max_tokens=200
             )
 
-            summary = summary_response["choices"][0]["message"]["content"].strip()
+            # Remove thinking tags from the summary response
+            raw_summary = summary_response["choices"][0]["message"]["content"].strip()
+            summary = self.response_processor.process_summary_text(raw_summary)
 
             # Generate keywords
             keywords_context = [
@@ -402,7 +406,9 @@ Keep the summary under 200 words and make it useful for future reference."""
                 max_tokens=100
             )
 
-            keywords = keywords_response["choices"][0]["message"]["content"].strip()
+            # Remove thinking tags from keywords response
+            raw_keywords = keywords_response["choices"][0]["message"]["content"].strip()
+            keywords = self.response_processor.process_summary_text(raw_keywords)
 
             return summary, keywords
 
@@ -443,13 +449,15 @@ Keep the summary under 200 words and make it useful for future reference."""
         if user_messages:
             summary_parts.append(f"User discussed: {len(user_messages)} topics")
 
-            # Extract first and last user messages for context
+            # Extract first and last user messages for context (remove thinking tags)
             if len(user_messages) > 0:
-                first_msg = user_messages[0].content[:100] + "..." if len(user_messages[0].content) > 100 else user_messages[0].content
+                first_content = self.response_processor.process_summary_text(user_messages[0].content)
+                first_msg = first_content[:100] + "..." if len(first_content) > 100 else first_content
                 summary_parts.append(f"Started with: {first_msg}")
 
             if len(user_messages) > 1:
-                last_msg = user_messages[-1].content[:100] + "..." if len(user_messages[-1].content) > 100 else user_messages[-1].content
+                last_content = self.response_processor.process_summary_text(user_messages[-1].content)
+                last_msg = last_content[:100] + "..." if len(last_content) > 100 else last_content
                 summary_parts.append(f"Ended with: {last_msg}")
 
         summary_parts.append(f"Total messages: {len(messages)}")
@@ -461,8 +469,12 @@ Keep the summary under 200 words and make it useful for future reference."""
         """Extract simple keywords as fallback"""
         import re
 
-        # Combine all message content
-        all_text = " ".join([msg.content for msg in messages if msg.role == MessageRole.USER])
+        # Combine all message content (with thinking tags removed)
+        cleaned_messages = [
+            self.response_processor.process_summary_text(msg.content)
+            for msg in messages if msg.role == MessageRole.USER
+        ]
+        all_text = " ".join(cleaned_messages)
 
         # Extract words (3+ characters)
         words = re.findall(r'\b[a-zA-Z]{3,}\b', all_text.lower())

@@ -80,13 +80,17 @@ class SearchManager:
                 # Insert all summaries
                 summaries = self.db.query(ConversationSummary).all()
                 for summary in summaries:
+                    # Clean summary and keywords before storing in FTS
+                    clean_summary = self.response_processor.process_summary_text(summary.summary or "")
+                    clean_keywords = self.response_processor.process_summary_text(summary.keywords or "")
+                    
                     self.db.execute(text("""
                         INSERT INTO conversation_summaries_fts(rowid, summary, keywords)
                         VALUES (:id, :summary, :keywords)
                     """), {
                         "id": summary.id,
-                        "summary": summary.summary or "",
-                        "keywords": summary.keywords or ""
+                        "summary": clean_summary,
+                        "keywords": clean_keywords
                     })
                 
                 self.db.commit()
@@ -578,13 +582,17 @@ class SearchManager:
             
             # Rebuild FTS entries
             for summary in summaries:
+                # Clean summary and keywords before storing in FTS
+                clean_summary = self.response_processor.process_summary_text(summary.summary or "")
+                clean_keywords = self.response_processor.process_summary_text(summary.keywords or "")
+                
                 self.db.execute(text("""
                     INSERT INTO conversation_summaries_fts(rowid, summary, keywords)
                     VALUES (:id, :summary, :keywords)
                 """), {
                     "id": summary.id,
-                    "summary": summary.summary or "",
-                    "keywords": summary.keywords or ""
+                    "summary": clean_summary,
+                    "keywords": clean_keywords
                 })
             
             self.db.commit()
