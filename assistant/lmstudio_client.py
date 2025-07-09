@@ -50,9 +50,10 @@ class LMStudioClient:
         max_tokens: int = None,
         stream: bool = False,
         tools: Optional[List[Dict[str, Any]]] = None,
-        tool_choice: Optional[str] = None
+        tool_choice: Optional[str] = None,
+        debug_context: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
-        """Send chat completion request to LMStudio with MCP tool support"""
+        """Send chat completion request to LMStudio with MCP tool support and debug capture"""
         
         payload = {
             "model": self.model,
@@ -68,17 +69,32 @@ class LMStudioClient:
             if tool_choice:
                 payload["tool_choice"] = tool_choice
         
+        # Store debug information if provided
+        if debug_context is not None:
+            from datetime import datetime
+            debug_context['llm_request_payload'] = payload.copy()
+            debug_context['llm_request_timestamp'] = datetime.now().isoformat()
+            debug_context['llm_request_messages_count'] = len(messages)
+            debug_context['llm_request_tools_count'] = len(tools) if tools else 0
+            logger.info(f"LLM Request captured: {payload['model']} - {len(messages)} messages, {len(tools) if tools else 0} tools")
+        
         try:
             if stream:
-                return await self._stream_completion(payload)
+                return await self._stream_completion(payload, debug_context)
             else:
-                return await self._single_completion(payload)
+                return await self._single_completion(payload, debug_context)
         except Exception as e:
             logger.error(f"Chat completion failed: {e}")
+            if debug_context:
+                debug_context['llm_request_error'] = str(e)
             raise
     
-    async def _single_completion(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+    async def _single_completion(self, payload: Dict[str, Any], debug_context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Handle single (non-streaming) completion"""
+        import time
+        
+        start_time = time.time()
+        
         response = await self.client.post(
             f"{self.base_url}/v1/chat/completions",
             json=payload
@@ -86,19 +102,45 @@ class LMStudioClient:
         response.raise_for_status()
         raw_response = response.json()
         
+        processing_time_ms = int((time.time() - start_time) * 1000)
+        
+        # Store debug information if provided
+        if debug_context is not None:
+            from datetime import datetime
+            debug_context['llm_response_raw'] = raw_response.copy()
+            debug_context['llm_response_timestamp'] = datetime.now().isoformat()
+            debug_context['llm_processing_time_ms'] = processing_time_ms
+            debug_context['llm_response_status'] = response.status_code
+            debug_context['llm_response_tokens'] = raw_response.get('usage', {}).get('total_tokens', 0)
+            
+            # Log the full request/response for debugging
+            logger.info(f"LLM Request completed in {processing_time_ms}ms, {debug_context['llm_response_tokens']} tokens")
+            logger.debug(f"Full LLM Request: {debug_context.get('llm_request_payload', {})}")
+            logger.debug(f"Full LLM Response: {raw_response}")
+        
         # Process response to remove thinking tags
         processed_response = self.response_processor.process_chat_response(raw_response)
         
         return processed_response
     
-    async def _stream_completion(self, payload: Dict[str, Any]) -> AsyncGenerator[Dict[str, Any], None]:
+    async def _stream_completion(self, payload: Dict[str, Any], debug_context: Optional[Dict[str, Any]] = None) -> AsyncGenerator[Dict[str, Any], None]:
         """Handle streaming completion"""
+        import time
+        
+        start_time = time.time()
+        
         async with self.client.stream(
             "POST",
             f"{self.base_url}/v1/chat/completions",
             json=payload
         ) as response:
             response.raise_for_status()
+            
+            # Store debug information if provided
+            if debug_context:
+                debug_context['llm_stream_start_time'] = start_time
+                debug_context['llm_response_status'] = response.status_code
+                debug_context['llm_stream_chunks'] = []
             
             in_thinking_block = False
             accumulated_content = ""
@@ -107,10 +149,19 @@ class LMStudioClient:
                 if line.startswith("data: "):
                     data = line[6:]  # Remove "data: " prefix
                     if data.strip() == "[DONE]":
+                        # Calculate final processing time
+                        if debug_context:
+                            from datetime import datetime
+                            debug_context['llm_processing_time_ms'] = int((time.time() - start_time) * 1000)
+                            debug_context['llm_response_timestamp'] = datetime.now().isoformat()
                         break
                     
                     try:
                         chunk = json.loads(data)
+                        
+                        # Store chunk for debugging
+                        if debug_context:
+                            debug_context['llm_stream_chunks'].append(chunk)
                         
                         # Process chunk to handle thinking tags
                         processed_chunk = self._process_streaming_chunk(chunk)

@@ -57,6 +57,15 @@ class Message(MessageBase):
     llm_model: Optional[str] = None
     temperature: Optional[float] = None
     processing_time: Optional[float] = None
+    
+    # Debug fields
+    debug_enabled: Optional[bool] = None
+    debug_data: Optional[Dict[str, Any]] = None
+    intermediary_steps: Optional[List[Dict[str, Any]]] = None
+    llm_request: Optional[Dict[str, Any]] = None
+    llm_response: Optional[Dict[str, Any]] = None
+    tool_calls: Optional[List[Dict[str, Any]]] = None
+    tool_results: Optional[List[Dict[str, Any]]] = None
 
     class Config:
         from_attributes = True

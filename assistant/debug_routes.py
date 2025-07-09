@@ -208,6 +208,8 @@ async def chat_with_debug_tracing(
             available_tools = get_mcp_tools_for_assistant()
 
         # Step 3: LLM Request with tracing
+        debug_context = {}  # Always create debug context
+        
         if trace_id:
             async with tool_manager.trace_step(
                 trace_id,
@@ -226,7 +228,8 @@ async def chat_with_debug_tracing(
                     "messages": context,
                     "temperature": request.temperature,
                     "max_tokens": request.max_tokens,
-                    "stream": False
+                    "stream": False,
+                    "debug_context": debug_context
                 }
 
                 # Add tools if available
@@ -242,7 +245,7 @@ async def chat_with_debug_tracing(
                 # Get LLM response
                 llm_response = await lmstudio_client.chat_completion(**llm_request_params)
 
-                # Store LLM request/response
+                # Store LLM request/response with debug data
                 if debug_session:
                     debug_persistence.store_llm_request(
                         message_id=user_message.id,
@@ -252,12 +255,12 @@ async def chat_with_debug_tracing(
                         temperature=request.temperature,
                         max_tokens=request.max_tokens,
                         stream=False,
-                        processing_time_ms=int((time.time() - start_time) * 1000),
+                        processing_time_ms=debug_context.get('llm_processing_time_ms', int((time.time() - start_time) * 1000)),
                         token_usage=llm_response.get("usage"),
                         tools_available=available_tools
                     )
 
-                    # Store debug step
+                    # Store debug step with full request payload
                     debug_persistence.store_debug_step(
                         message_id=user_message.id,
                         debug_session_id=debug_session.id,
@@ -269,20 +272,28 @@ async def chat_with_debug_tracing(
                         input_data={
                             "model": settings.lmstudio_model,
                             "context_size": len(context),
-                            "tools_available": len(available_tools)
+                            "tools_available": len(available_tools),
+                            "full_request_payload": debug_context.get('llm_request_payload', {}),
+                            "temperature": request.temperature,
+                            "max_tokens": request.max_tokens,
+                            "messages": context
                         },
                         output_data={
                             "token_usage": llm_response.get("usage"),
-                            "has_tool_calls": bool(llm_response.get("choices", [{}])[0].get("message", {}).get("tool_calls"))
+                            "has_tool_calls": bool(llm_response.get("choices", [{}])[0].get("message", {}).get("tool_calls")),
+                            "processing_time_ms": debug_context.get('llm_processing_time_ms'),
+                            "full_response": debug_context.get('llm_response_raw', {}),
+                            "response_tokens": debug_context.get('llm_response_tokens', 0)
                         }
                     )
         else:
-            # Standard processing without tracing
+            # Standard processing without tracing - still capture debug data
             llm_request_params = {
                 "messages": context,
                 "temperature": request.temperature,
                 "max_tokens": request.max_tokens,
-                "stream": False
+                "stream": False,
+                "debug_context": debug_context
             }
 
             if available_tools:
@@ -295,6 +306,21 @@ async def chat_with_debug_tracing(
                 llm_request_params["tool_choice"] = "auto"
 
             llm_response = await lmstudio_client.chat_completion(**llm_request_params)
+            
+            # Store LLM request/response even without tracing if debug is enabled
+            if debug_session:
+                debug_persistence.store_llm_request(
+                    message_id=user_message.id,
+                    model=settings.lmstudio_model,
+                    request_messages=context,
+                    response_data=llm_response,
+                    temperature=request.temperature,
+                    max_tokens=request.max_tokens,
+                    stream=False,
+                    processing_time_ms=debug_context.get('llm_processing_time_ms', 0),
+                    token_usage=llm_response.get("usage"),
+                    tools_available=available_tools
+                )
 
         # Step 4: Tool Processing with tracing
         if trace_id:
@@ -353,7 +379,8 @@ async def chat_with_debug_tracing(
                         messages=followup_context,
                         temperature=request.temperature,
                         max_tokens=request.max_tokens,
-                        stream=False
+                        stream=False,
+                        debug_context=debug_context
                     )
 
                     # Store followup debug step
@@ -418,13 +445,23 @@ async def chat_with_debug_tracing(
         # Convert SQLAlchemy Message model to Pydantic Message model for serialization
         message_schema = MessageSchema.model_validate(assistant_message)
 
+        # Always set debug_enabled flag when debug is requested
+        if request.enable_tool_trace:
+            message_schema.debug_enabled = True
+
         # If debug is enabled, fetch debug data and add it to the message
         if request.enable_tool_trace and debug_session:
+            # Wait a moment for the database to be updated
+            import asyncio
+            await asyncio.sleep(0.1)
+            
             # Get debug steps for this message
             debug_steps = debug_persistence.get_message_debug_steps(assistant_message.id)
+            logger.info(f"Retrieved {len(debug_steps)} debug steps for message {assistant_message.id}")
 
             # Get LLM requests for this message
             llm_requests = debug_persistence.get_message_llm_requests(assistant_message.id)
+            logger.info(f"Retrieved {len(llm_requests)} LLM requests for message {assistant_message.id}")
 
             if debug_steps:
                 # Convert debug steps to intermediary steps format
@@ -445,12 +482,14 @@ async def chat_with_debug_tracing(
 
                 # Add intermediary steps to message
                 message_schema.intermediary_steps = intermediary_steps
+                logger.info(f"Added {len(intermediary_steps)} debug steps to message {assistant_message.id}")
 
             if llm_requests and len(llm_requests) > 0:
                 # Get the first LLM request (usually there's only one)
                 llm_request = llm_requests[0]
+                logger.info(f"Processing LLM request {llm_request.request_id} for message {assistant_message.id}")
 
-                # Convert to LLM request format
+                # Convert to LLM request format with full payload
                 llm_request_data = {
                     "model": llm_request.model,
                     "messages": llm_request.request_messages,
@@ -459,29 +498,61 @@ async def chat_with_debug_tracing(
                     "tools": llm_request.tools_available,
                     "tool_choice": "auto" if llm_request.tools_available else None,
                     "stream": llm_request.stream,
-                    "timestamp": llm_request.timestamp.isoformat()
+                    "timestamp": llm_request.timestamp.isoformat(),
+                    "request_id": llm_request.request_id,
+                    "processing_time_ms": llm_request.processing_time_ms
                 }
 
                 # Add LLM request to message
                 message_schema.llm_request = llm_request_data
+                logger.info(f"Added LLM request data to message {assistant_message.id}")
 
                 # Convert to LLM response format
                 llm_response_data = {
                     "response": llm_request.response_data,
                     "timestamp": llm_request.timestamp.isoformat(),
                     "processing_time_ms": llm_request.processing_time_ms,
-                    "token_usage": llm_request.token_usage
+                    "token_usage": llm_request.token_usage,
+                    "request_id": llm_request.request_id
                 }
 
                 # Add LLM response to message
                 message_schema.llm_response = llm_response_data
+                logger.info(f"Added LLM response data to message {assistant_message.id}")
 
                 # Add tool calls and results if available
                 if llm_request.tool_calls:
                     message_schema.tool_calls = llm_request.tool_calls
+                    logger.info(f"Added {len(llm_request.tool_calls)} tool calls to message {assistant_message.id}")
 
                 if llm_request.tool_results:
                     message_schema.tool_results = llm_request.tool_results
+                    logger.info(f"Added {len(llm_request.tool_results)} tool results to message {assistant_message.id}")
+            else:
+                logger.warning(f"No LLM request data found for message {assistant_message.id}")
+                
+            # If no debug data was found, add a debug flag and log
+            if not debug_steps and not llm_requests:
+                logger.warning(f"No debug data found for message {assistant_message.id} despite debug being enabled")
+                message_schema.debug_data = {
+                    "debug_enabled": True,
+                    "debug_session_id": debug_session.id,
+                    "message_id": assistant_message.id,
+                    "error": "No debug data found in database",
+                    "debug_context_captured": bool(debug_context),
+                    "debug_context_keys": list(debug_context.keys()) if debug_context else []
+                }
+            else:
+                # Add debug context info for troubleshooting
+                message_schema.debug_data = {
+                    "debug_enabled": True,
+                    "debug_session_id": debug_session.id,
+                    "message_id": assistant_message.id,
+                    "debug_steps_count": len(debug_steps),
+                    "llm_requests_count": len(llm_requests),
+                    "debug_context_captured": bool(debug_context),
+                    "debug_context_keys": list(debug_context.keys()) if debug_context else []
+                }
 
         return ChatResponseWithDebug(
             message=message_schema,
@@ -489,7 +560,12 @@ async def chat_with_debug_tracing(
             processing_time=processing_time,
             token_count=final_response.get("usage", {}).get("total_tokens"),
             tool_trace=trace,
-            debug_enabled=request.enable_tool_trace
+            debug_enabled=request.enable_tool_trace,
+            # Debug response fields
+            total_steps=len(debug_steps) if debug_steps else 0,
+            successful_steps=len([s for s in debug_steps if s.success]) if debug_steps else 0,
+            failed_steps=len([s for s in debug_steps if not s.success]) if debug_steps else 0,
+            tools_used=processed_response.get("tool_results", [])
         )
 
     except TimeoutException as e:

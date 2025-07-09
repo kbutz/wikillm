@@ -225,6 +225,33 @@ export default function AIAssistantApp({ onAdminAccess, onPowerUserAccess }: AIA
 
       setMessages(prev => [...prev, response.message]);
 
+      // Debug: Log the response message to see what debug data is included
+      if (debugMode) {
+        console.log('=== DEBUG MODE RESPONSE ===');
+        console.log('Full response:', response);
+        console.log('Response message:', response.message);
+        
+        // Log specific debug fields
+        if (response.message) {
+          console.log('Message ID:', response.message.id);
+          console.log('Debug enabled:', response.message.debug_enabled);
+          console.log('Intermediary steps:', response.message.intermediary_steps);
+          console.log('LLM request:', response.message.llm_request);
+          console.log('LLM response:', response.message.llm_response);
+          console.log('Tool calls:', response.message.tool_calls);
+          console.log('Tool results:', response.message.tool_results);
+        }
+        
+        // Log the full ChatResponseWithDebug fields
+        if ('tool_trace' in response) {
+          console.log('Tool trace:', response.tool_trace);
+          console.log('Debug enabled flag:', response.debug_enabled);
+          console.log('Total steps:', response.total_steps);
+          console.log('Tools used:', response.tools_used);
+        }
+        console.log('=== END DEBUG INFO ===');
+      }
+
       // Update active conversation or create new one
       if (!activeConversation) {
         const updatedConvs = await api.getUserConversations(currentUser.id);
@@ -238,6 +265,63 @@ export default function AIAssistantApp({ onAdminAccess, onPowerUserAccess }: AIA
         try {
           const debugResponse = await api.getConversationDebugSummary(activeConversation.id, currentUser.id);
           setDebugSummary(debugResponse.data);
+          
+          // If the message doesn't have debug data, try to fetch it separately
+          if (!response.message.intermediary_steps && !response.message.llm_request) {
+            console.log('Message missing debug data, attempting to fetch from debug data endpoint');
+            
+            const debugData = await api.getConversationDebugData(activeConversation.id, currentUser.id);
+            
+            if (debugData.has_debug_data && debugData.debug_data.messages.length > 0) {
+              // Find the most recent message (should be our response)
+              const latestDebugMessage = debugData.debug_data.messages[debugData.debug_data.messages.length - 1];
+              
+              if (latestDebugMessage.message_id === response.message.id) {
+                console.log('Found matching debug data for message:', latestDebugMessage);
+                
+                // Update the message with debug data
+                setMessages(prev => prev.map(msg => 
+                  msg.id === response.message.id 
+                    ? {
+                        ...msg,
+                        intermediary_steps: latestDebugMessage.debug_steps.map(step => ({
+                          step_id: step.step_id,
+                          step_type: step.step_type as 'tool_call' | 'tool_result' | 'memory_retrieval' | 'context_building' | 'llm_request' | 'llm_response' | 'error',
+                          timestamp: step.timestamp,
+                          title: step.title,
+                          description: step.description,
+                          data: step.input_data || {},
+                          duration_ms: step.duration_ms,
+                          success: step.success,
+                          error_message: step.error_message
+                        })),
+                        llm_request: latestDebugMessage.llm_requests[0] ? {
+                          model: latestDebugMessage.llm_requests[0].model,
+                          messages: latestDebugMessage.llm_requests[0].request_messages,
+                          temperature: latestDebugMessage.llm_requests[0].temperature,
+                          max_tokens: latestDebugMessage.llm_requests[0].max_tokens,
+                          tools: latestDebugMessage.llm_requests[0].tools_available,
+                          tool_choice: latestDebugMessage.llm_requests[0].tools_available && latestDebugMessage.llm_requests[0].tools_available.length > 0 ? 'auto' : undefined,
+                          stream: latestDebugMessage.llm_requests[0].stream,
+                          timestamp: latestDebugMessage.llm_requests[0].timestamp
+                        } : undefined,
+                        llm_response: latestDebugMessage.llm_requests[0] ? {
+                          response: latestDebugMessage.llm_requests[0].response_data,
+                          timestamp: latestDebugMessage.llm_requests[0].timestamp,
+                          processing_time_ms: latestDebugMessage.llm_requests[0].processing_time_ms ?? 0,
+                          token_usage: latestDebugMessage.llm_requests[0].token_usage
+                        } : undefined,
+                        tool_calls: latestDebugMessage.llm_requests[0]?.tool_calls,
+                        tool_results: latestDebugMessage.llm_requests[0]?.tool_results,
+                        debug_enabled: true
+                      } as Message
+                    : msg
+                ));
+                
+                console.log('Successfully merged debug data into message');
+              }
+            }
+          }
         } catch (error) {
           console.error('Failed to reload debug summary:', error);
         }

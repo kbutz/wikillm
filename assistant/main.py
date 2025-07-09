@@ -335,11 +335,13 @@ async def chat_with_mcp_tools(
         available_tools = get_mcp_tools_for_assistant()
 
         # Prepare LLM request with tools
+        debug_context = {}
         llm_request_params = {
             "messages": context,
             "temperature": request.temperature,
             "max_tokens": request.max_tokens,
-            "stream": False
+            "stream": False,
+            "debug_context": debug_context
         }
 
         # Add tools if available
@@ -381,7 +383,8 @@ async def chat_with_mcp_tools(
                 messages=followup_context,
                 temperature=request.temperature,
                 max_tokens=request.max_tokens,
-                stream=False
+                stream=False,
+                debug_context=debug_context
             )
 
         # Extract response content safely
@@ -508,11 +511,13 @@ async def chat_stream_with_mcp_tools(
             available_tools = get_mcp_tools_for_assistant()
 
             # Prepare streaming request
+            debug_context = {}
             stream_params = {
                 "messages": context,
                 "temperature": request.temperature,
                 "max_tokens": request.max_tokens,
-                "stream": True
+                "stream": True,
+                "debug_context": debug_context
             }
 
             # Add tools if available
