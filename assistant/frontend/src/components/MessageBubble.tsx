@@ -486,12 +486,16 @@ export default function MessageBubble({ message, showDebugInfo = false }: Messag
 
             {/* NEW: Raw LLM Request - Most Prominent Display */}
             {message.llm_request && (
-              <RawLLMRequestComponent llmRequest={message.llm_request} />
+              <div className="mb-3">
+                <RawLLMRequestComponent llmRequest={message.llm_request} />
+              </div>
             )}
 
             {/* NEW: Raw LLM Response - Most Prominent Display */}
             {message.llm_response && (
-              <RawLLMResponseComponent llmResponse={message.llm_response} />
+              <div className="mb-3">
+                <RawLLMResponseComponent llmResponse={message.llm_response} />
+              </div>
             )}
 
             {/* Intermediary Steps */}

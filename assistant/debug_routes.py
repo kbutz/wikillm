@@ -24,6 +24,7 @@ from enhanced_schemas import (
 from tool_usage_manager import ToolUsageManager
 from enhanced_conversation_manager import EnhancedConversationManager
 from debug_persistence_manager import DebugPersistenceManager
+from debug_data_processor import DebugDataProcessor
 from memory_manager import MemoryManager, EnhancedMemoryManager
 from lmstudio_client import lmstudio_client
 from config import settings
@@ -96,6 +97,9 @@ async def chat_with_debug_tracing(
     debug_session = None
 
     try:
+        # Initialize debug data processor
+        debug_processor = DebugDataProcessor(db)
+        
         # Verify user exists
         user = db.query(User).filter(User.id == request.user_id).first()
         if not user:
@@ -442,117 +446,26 @@ async def chat_with_debug_tracing(
                 enhanced_memory
             )
 
-        # Convert SQLAlchemy Message model to Pydantic Message model for serialization
-        message_schema = MessageSchema.model_validate(assistant_message)
-
-        # Always set debug_enabled flag when debug is requested
-        if request.enable_tool_trace:
-            message_schema.debug_enabled = True
-
-        # If debug is enabled, fetch debug data and add it to the message
+        # Process debug data using the debug data processor
         if request.enable_tool_trace and debug_session:
             # Wait a moment for the database to be updated
             import asyncio
             await asyncio.sleep(0.1)
             
-            # Get debug steps for this message
-            debug_steps = debug_persistence.get_message_debug_steps(assistant_message.id)
-            logger.info(f"Retrieved {len(debug_steps)} debug steps for message {assistant_message.id}")
-
-            # Get LLM requests for this message
-            llm_requests = debug_persistence.get_message_llm_requests(assistant_message.id)
-            logger.info(f"Retrieved {len(llm_requests)} LLM requests for message {assistant_message.id}")
-
-            if debug_steps:
-                # Convert debug steps to intermediary steps format
-                intermediary_steps = []
-                for step in debug_steps:
-                    intermediary_step = {
-                        "step_id": step.step_id,
-                        "step_type": step.step_type,
-                        "timestamp": step.timestamp.isoformat(),
-                        "title": step.title,
-                        "description": step.description,
-                        "data": step.input_data or {},
-                        "duration_ms": step.duration_ms,
-                        "success": step.success,
-                        "error_message": step.error_message
-                    }
-                    intermediary_steps.append(intermediary_step)
-
-                # Add intermediary steps to message
-                message_schema.intermediary_steps = intermediary_steps
-                logger.info(f"Added {len(intermediary_steps)} debug steps to message {assistant_message.id}")
-
-            if llm_requests and len(llm_requests) > 0:
-                # Get the first LLM request (usually there's only one)
-                llm_request = llm_requests[0]
-                logger.info(f"Processing LLM request {llm_request.request_id} for message {assistant_message.id}")
-
-                # Convert to LLM request format with full payload
-                llm_request_data = {
-                    "model": llm_request.model,
-                    "messages": llm_request.request_messages,
-                    "temperature": llm_request.temperature,
-                    "max_tokens": llm_request.max_tokens,
-                    "tools": llm_request.tools_available,
-                    "tool_choice": "auto" if llm_request.tools_available else None,
-                    "stream": llm_request.stream,
-                    "timestamp": llm_request.timestamp.isoformat(),
-                    "request_id": llm_request.request_id,
-                    "processing_time_ms": llm_request.processing_time_ms
-                }
-
-                # Add LLM request to message
-                message_schema.llm_request = llm_request_data
-                logger.info(f"Added LLM request data to message {assistant_message.id}")
-
-                # Convert to LLM response format
-                llm_response_data = {
-                    "response": llm_request.response_data,
-                    "timestamp": llm_request.timestamp.isoformat(),
-                    "processing_time_ms": llm_request.processing_time_ms,
-                    "token_usage": llm_request.token_usage,
-                    "request_id": llm_request.request_id
-                }
-
-                # Add LLM response to message
-                message_schema.llm_response = llm_response_data
-                logger.info(f"Added LLM response data to message {assistant_message.id}")
-
-                # Add tool calls and results if available
-                if llm_request.tool_calls:
-                    message_schema.tool_calls = llm_request.tool_calls
-                    logger.info(f"Added {len(llm_request.tool_calls)} tool calls to message {assistant_message.id}")
-
-                if llm_request.tool_results:
-                    message_schema.tool_results = llm_request.tool_results
-                    logger.info(f"Added {len(llm_request.tool_results)} tool results to message {assistant_message.id}")
-            else:
-                logger.warning(f"No LLM request data found for message {assistant_message.id}")
-                
-            # If no debug data was found, add a debug flag and log
-            if not debug_steps and not llm_requests:
-                logger.warning(f"No debug data found for message {assistant_message.id} despite debug being enabled")
-                message_schema.debug_data = {
-                    "debug_enabled": True,
-                    "debug_session_id": debug_session.id,
-                    "message_id": assistant_message.id,
-                    "error": "No debug data found in database",
-                    "debug_context_captured": bool(debug_context),
-                    "debug_context_keys": list(debug_context.keys()) if debug_context else []
-                }
-            else:
-                # Add debug context info for troubleshooting
-                message_schema.debug_data = {
-                    "debug_enabled": True,
-                    "debug_session_id": debug_session.id,
-                    "message_id": assistant_message.id,
-                    "debug_steps_count": len(debug_steps),
-                    "llm_requests_count": len(llm_requests),
-                    "debug_context_captured": bool(debug_context),
-                    "debug_context_keys": list(debug_context.keys()) if debug_context else []
-                }
+            # Ensure debug data completeness for this message
+            debug_processor.ensure_debug_data_completeness(assistant_message.id)
+            
+            # Process and attach debug data to the message
+            message_schema = debug_processor.process_debug_data_for_message(assistant_message)
+            
+            logger.info(f"Processed debug data for message {assistant_message.id} using DebugDataProcessor")
+        else:
+            # Convert SQLAlchemy Message model to Pydantic Message model for serialization
+            message_schema = MessageSchema.model_validate(assistant_message)
+            
+            # Set debug_enabled flag when debug is requested
+            if request.enable_tool_trace:
+                message_schema.debug_enabled = True
 
         return ChatResponseWithDebug(
             message=message_schema,
@@ -561,10 +474,10 @@ async def chat_with_debug_tracing(
             token_count=final_response.get("usage", {}).get("total_tokens"),
             tool_trace=trace,
             debug_enabled=request.enable_tool_trace,
-            # Debug response fields
-            total_steps=len(debug_steps) if debug_steps else 0,
-            successful_steps=len([s for s in debug_steps if s.success]) if debug_steps else 0,
-            failed_steps=len([s for s in debug_steps if not s.success]) if debug_steps else 0,
+            # Debug response fields based on processed message
+            total_steps=len(message_schema.intermediary_steps or []),
+            successful_steps=len([s for s in (message_schema.intermediary_steps or []) if s.get("success", True)]),
+            failed_steps=len([s for s in (message_schema.intermediary_steps or []) if not s.get("success", True)]),
             tools_used=processed_response.get("tool_results", [])
         )
 
@@ -1038,6 +951,41 @@ async def execute_script(script_path: str) -> Dict[str, Any]:
             "output": "",
             "error": str(e)
         }
+
+# Debug data migration endpoint
+@debug_router.post("/migrate-debug-data")
+async def migrate_debug_data(
+    conversation_id: Optional[int] = None,
+    user_id: Optional[int] = None,
+    db: Session = Depends(get_db),
+    debug_persistence: DebugPersistenceManager = Depends(get_debug_persistence_manager)
+):
+    """Migrate existing debug data to ensure proper flagging"""
+    try:
+        debug_processor = DebugDataProcessor(db)
+        
+        if conversation_id:
+            # Migrate specific conversation
+            processed_count = debug_processor.batch_process_debug_data(conversation_id)
+            return {
+                "success": True,
+                "message": f"Migrated debug data for {processed_count} messages in conversation {conversation_id}"
+            }
+        else:
+            # Migrate all debug-enabled messages
+            from debug_data_processor import migrate_existing_debug_data
+            fixed_count = migrate_existing_debug_data(db)
+            return {
+                "success": True,
+                "message": f"Migrated debug data for {fixed_count} messages across all conversations"
+            }
+    except Exception as e:
+        logger.error(f"Failed to migrate debug data: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to migrate debug data: {str(e)}"
+        )
+
 
 # Background task functions
 async def extract_and_store_enhanced_memories(

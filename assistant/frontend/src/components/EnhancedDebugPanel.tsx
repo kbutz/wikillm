@@ -17,16 +17,17 @@ interface EnhancedDebugPanelProps {
   conversationId: number;
   userId: number;
   onClose: () => void;
+  initialTab?: 'overview' | 'steps' | 'llm' | 'timeline' | 'export';
 }
 
 const api = new ApiService();
 
-export default function EnhancedDebugPanel({ conversationId, userId, onClose }: EnhancedDebugPanelProps) {
+export default function EnhancedDebugPanel({ conversationId, userId, onClose, initialTab = 'overview' }: EnhancedDebugPanelProps) {
   const [debugData, setDebugData] = useState<ConversationDebugData | null>(null);
   const [debugSummary, setDebugSummary] = useState<DebugSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'overview' | 'steps' | 'llm' | 'timeline' | 'export'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'steps' | 'llm' | 'timeline' | 'export'>(initialTab);
   const [expandedMessages, setExpandedMessages] = useState<Set<number>>(new Set());
   const [expandedSteps, setExpandedSteps] = useState<Set<string>>(new Set());
   const [searchQuery, setSearchQuery] = useState('');
