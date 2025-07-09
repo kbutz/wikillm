@@ -1,14 +1,25 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Send, MessageSquare, Plus, Trash2, User, Settings, Brain, Clock, Database, Shield, Bug, BarChart3 } from 'lucide-react';
+import { Send, MessageSquare, Plus, Trash2, User, Settings, Brain, Clock, Database, Shield, Bug, BarChart3, History, Archive } from 'lucide-react';
 import { ApiService } from '../services/api';
-import { User as UserType, Message, Conversation, UserMemory, ChatRequestWithDebug, ChatResponse, ChatResponseWithDebug } from '../types';
+import { 
+  User as UserType, 
+  Message, 
+  Conversation, 
+  UserMemory, 
+  ChatRequestWithDebug, 
+  ChatResponse, 
+  ChatResponseWithDebug,
+  DebugPreference,
+  DebugSummary
+} from '../types';
 import MessageBubble from './MessageBubble';
 import LoadingMessage from './LoadingMessage';
 import UserSetupModal from './UserSetupModal';
 import MemoryPanel from './MemoryPanel';
 import DebugPanel from './DebugPanel';
 import MCPDebugPanel from './MCPDebugPanel';
-import DebugSummary from './DebugSummary';
+import DebugSummaryComponent from './DebugSummary';
+import EnhancedDebugPanel from './EnhancedDebugPanel';
 
 const api = new ApiService();
 
@@ -29,8 +40,89 @@ export default function AIAssistantApp({ onAdminAccess, onPowerUserAccess }: AIA
   const [showMemories, setShowMemories] = useState(false);
   const [showDebugPanel, setShowDebugPanel] = useState(false);
   const [showDebugSummary, setShowDebugSummary] = useState(false);
+  const [showEnhancedDebugPanel, setShowEnhancedDebugPanel] = useState(false);
   const [debugMode, setDebugMode] = useState(false);
+  const [debugPreference, setDebugPreference] = useState<DebugPreference>({ enabled: false });
+  const [debugSummary, setDebugSummary] = useState<DebugSummary | null>(null);
+  const [isLoadingDebugData, setIsLoadingDebugData] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  // Load debug preference from backend and localStorage
+  useEffect(() => {
+    const loadDebugPreference = async () => {
+      if (currentUser) {
+        try {
+          // Load from backend
+          const response = await api.getUserDebugPreference(currentUser.id);
+          const serverPreference = response.data.enabled;
+
+          // Check localStorage for session-specific preference
+          const localPreference = localStorage.getItem(`debugMode_${currentUser.id}`);
+          const localEnabled = localPreference === 'true';
+
+          // Use localStorage value if it exists, otherwise use server preference
+          const finalEnabled = localPreference !== null ? localEnabled : serverPreference;
+
+          setDebugMode(finalEnabled);
+          setDebugPreference({ enabled: finalEnabled });
+
+          // Sync localStorage with final decision
+          localStorage.setItem(`debugMode_${currentUser.id}`, finalEnabled.toString());
+        } catch (error) {
+          console.error('Failed to load debug preference:', error);
+          // Fallback to localStorage only
+          const localPreference = localStorage.getItem(`debugMode_${currentUser.id}`);
+          if (localPreference !== null) {
+            const enabled = localPreference === 'true';
+            setDebugMode(enabled);
+            setDebugPreference({ enabled });
+          }
+        }
+      }
+    };
+
+    loadDebugPreference();
+  }, [currentUser]);
+
+  // Save debug preference to backend and localStorage
+  const updateDebugPreference = async (enabled: boolean) => {
+    if (!currentUser) return;
+
+    try {
+      // Update localStorage immediately for instant UI response
+      localStorage.setItem(`debugMode_${currentUser.id}`, enabled.toString());
+      setDebugMode(enabled);
+      setDebugPreference({ enabled });
+
+      // Update backend preference
+      await api.setUserDebugPreference(currentUser.id, enabled);
+    } catch (error) {
+      console.error('Failed to save debug preference:', error);
+      // Keep localStorage change even if backend fails
+    }
+  };
+
+  // Load debug summary for active conversation
+  useEffect(() => {
+    const loadDebugSummary = async () => {
+      if (activeConversation && currentUser && debugMode) {
+        try {
+          setIsLoadingDebugData(true);
+          const response = await api.getConversationDebugSummary(activeConversation.id, currentUser.id);
+          setDebugSummary(response.data);
+        } catch (error) {
+          console.error('Failed to load debug summary:', error);
+          setDebugSummary(null);
+        } finally {
+          setIsLoadingDebugData(false);
+        }
+      } else {
+        setDebugSummary(null);
+      }
+    };
+
+    loadDebugSummary();
+  }, [activeConversation, currentUser, debugMode]);
 
   // Initialize user
   const handleUserSetup = async (userData: { username: string; email?: string; full_name?: string }) => {
@@ -82,6 +174,7 @@ export default function AIAssistantApp({ onAdminAccess, onPowerUserAccess }: AIA
       setConversations(prev => [conv, ...prev]);
       setActiveConversation(conv);
       setMessages([]);
+      setDebugSummary(null); // Reset debug summary for new conversation
     } catch (error) {
       console.error('Failed to create conversation:', error);
     }
@@ -111,6 +204,9 @@ export default function AIAssistantApp({ onAdminAccess, onPowerUserAccess }: AIA
           message: newMessage,
           user_id: currentUser.id,
           conversation_id: activeConversation?.id,
+          enable_tool_trace: true,
+          show_debug_steps: true,
+          trace_level: "detailed",
           include_intermediary_steps: true,
           include_llm_request: true,
           include_tool_details: true,
@@ -135,6 +231,16 @@ export default function AIAssistantApp({ onAdminAccess, onPowerUserAccess }: AIA
         setConversations(updatedConvs);
         const newConv = updatedConvs.find(c => c.id === response.conversation_id);
         if (newConv) setActiveConversation(newConv);
+      }
+
+      // Reload debug summary if in debug mode
+      if (debugMode && activeConversation) {
+        try {
+          const debugResponse = await api.getConversationDebugSummary(activeConversation.id, currentUser.id);
+          setDebugSummary(debugResponse.data);
+        } catch (error) {
+          console.error('Failed to reload debug summary:', error);
+        }
       }
     } catch (error) {
       console.error('Failed to send message:', error);
@@ -192,9 +298,32 @@ export default function AIAssistantApp({ onAdminAccess, onPowerUserAccess }: AIA
       if (activeConversation?.id === conversationId) {
         setActiveConversation(null);
         setMessages([]);
+        setDebugSummary(null);
       }
     } catch (error) {
       console.error('Failed to delete conversation:', error);
+    }
+  };
+
+  // Clear debug data for conversation
+  const clearDebugData = async () => {
+    if (!activeConversation || !currentUser) return;
+
+    try {
+      // End all active debug sessions for this conversation
+      if (debugSummary?.sessions) {
+        for (const session of debugSummary.sessions) {
+          if (session.is_active) {
+            await api.endDebugSession(session.session_id);
+          }
+        }
+      }
+
+      // Reload debug summary
+      const response = await api.getConversationDebugSummary(activeConversation.id, currentUser.id);
+      setDebugSummary(response.data);
+    } catch (error) {
+      console.error('Failed to clear debug data:', error);
     }
   };
 
@@ -233,7 +362,7 @@ export default function AIAssistantApp({ onAdminAccess, onPowerUserAccess }: AIA
             <h1 className="text-xl font-bold text-gray-900">AI Assistant</h1>
             <div className="flex items-center gap-2">
               <button
-                onClick={() => setDebugMode(!debugMode)}
+                onClick={() => updateDebugPreference(!debugMode)}
                 className={`p-2 rounded-lg transition-colors ${
                   debugMode 
                     ? 'bg-green-100 text-green-600 hover:bg-green-200' 
@@ -298,9 +427,20 @@ export default function AIAssistantApp({ onAdminAccess, onPowerUserAccess }: AIA
             >
               <div className="flex items-center justify-between">
                 <div className="flex-1 min-w-0">
-                  <h3 className="text-sm font-medium text-gray-900 truncate">
-                    {conversation.title}
-                  </h3>
+                  <div className="flex items-center gap-2">
+                    <h3 className="text-sm font-medium text-gray-900 truncate">
+                      {conversation.title}
+                    </h3>
+                    {/* Debug indicator */}
+                    {debugMode && activeConversation?.id === conversation.id && debugSummary?.has_debug_data && (
+                      <div className="flex items-center gap-1">
+                        <Bug className="w-3 h-3 text-green-600" />
+                        <span className="text-xs text-green-600 font-medium">
+                          {debugSummary.total_steps}
+                        </span>
+                      </div>
+                    )}
+                  </div>
                   <p className="text-xs text-gray-500 mt-1">
                     {new Date(conversation.updated_at).toLocaleDateString()}
                   </p>
@@ -330,14 +470,22 @@ export default function AIAssistantApp({ onAdminAccess, onPowerUserAccess }: AIA
         {/* User Info */}
         {currentUser && (
           <div className="p-4 border-t border-gray-200">
-            <div className="flex items-center">
-              <div className="w-8 h-8 bg-blue-100 rounded-full flex items-center justify-center">
-                <User className="w-4 h-4 text-blue-600" />
+            <div className="flex items-center justify-between">
+              <div className="flex items-center">
+                <div className="w-8 h-8 bg-blue-100 rounded-full flex items-center justify-center">
+                  <User className="w-4 h-4 text-blue-600" />
+                </div>
+                <div className="ml-3">
+                  <p className="text-sm font-medium text-gray-900">{currentUser.username}</p>
+                  <p className="text-xs text-gray-500">{currentUser.email}</p>
+                </div>
               </div>
-              <div className="ml-3">
-                <p className="text-sm font-medium text-gray-900">{currentUser.username}</p>
-                <p className="text-xs text-gray-500">{currentUser.email}</p>
-              </div>
+              {debugMode && (
+                <div className="flex items-center gap-1">
+                  <Bug className="w-4 h-4 text-green-600" />
+                  <span className="text-xs text-green-600 font-medium">Debug</span>
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -350,19 +498,51 @@ export default function AIAssistantApp({ onAdminAccess, onPowerUserAccess }: AIA
             {/* Chat Header */}
             <div className="px-6 py-4 border-b border-gray-200 bg-white">
               <div className="flex items-center justify-between">
-                <h2 className="text-lg font-semibold text-gray-900">
-                  {activeConversation.title}
-                </h2>
-                {debugMode && (
-                  <button
-                    onClick={() => setShowDebugSummary(true)}
-                    className="flex items-center gap-2 px-3 py-1 bg-blue-100 text-blue-800 rounded-lg hover:bg-blue-200 transition-colors"
-                    title="View Debug Summary"
-                  >
-                    <BarChart3 className="w-4 h-4" />
-                    <span className="text-sm font-medium">Debug Summary</span>
-                  </button>
-                )}
+                <div className="flex items-center gap-3">
+                  <h2 className="text-lg font-semibold text-gray-900">
+                    {activeConversation.title}
+                  </h2>
+                  {debugMode && debugSummary?.has_debug_data && (
+                    <div className="flex items-center gap-2 text-sm text-gray-600">
+                      <Clock className="w-4 h-4" />
+                      <span>{debugSummary.total_steps} steps</span>
+                      <span>•</span>
+                      <span>{debugSummary.total_processing_time.toFixed(2)}s</span>
+                    </div>
+                  )}
+                </div>
+                <div className="flex items-center gap-2">
+                  {debugMode && (
+                    <>
+                      <button
+                        onClick={() => setShowEnhancedDebugPanel(true)}
+                        className="flex items-center gap-2 px-3 py-1 bg-blue-100 text-blue-800 rounded-lg hover:bg-blue-200 transition-colors"
+                        title="View Enhanced Debug Panel"
+                      >
+                        <Database className="w-4 h-4" />
+                        <span className="text-sm font-medium">Debug Data</span>
+                      </button>
+                      <button
+                        onClick={() => setShowDebugSummary(true)}
+                        className="flex items-center gap-2 px-3 py-1 bg-green-100 text-green-800 rounded-lg hover:bg-green-200 transition-colors"
+                        title="View Debug Summary"
+                      >
+                        <BarChart3 className="w-4 h-4" />
+                        <span className="text-sm font-medium">Summary</span>
+                      </button>
+                      {debugSummary?.has_debug_data && (
+                        <button
+                          onClick={clearDebugData}
+                          className="flex items-center gap-2 px-3 py-1 bg-red-100 text-red-800 rounded-lg hover:bg-red-200 transition-colors"
+                          title="Clear Debug Data"
+                        >
+                          <Archive className="w-4 h-4" />
+                          <span className="text-sm font-medium">Clear</span>
+                        </button>
+                      )}
+                    </>
+                  )}
+                </div>
               </div>
             </div>
 
@@ -373,10 +553,22 @@ export default function AIAssistantApp({ onAdminAccess, onPowerUserAccess }: AIA
                   <div className="flex items-center gap-2">
                     <Bug className="w-4 h-4 text-yellow-600" />
                     <span className="text-sm font-medium text-yellow-800">Debug Mode Active</span>
+                    {isLoadingDebugData && (
+                      <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-yellow-600"></div>
+                    )}
                   </div>
                   <p className="text-xs text-yellow-700 mt-1">
-                    Messages will include detailed processing steps, tool calls, and LLM requests.
+                    Messages will include detailed processing steps, tool calls, and LLM requests. 
+                    Debug data is automatically saved and persists between sessions.
                   </p>
+                  {debugSummary?.has_debug_data && (
+                    <div className="mt-2 flex items-center gap-4 text-xs text-yellow-700">
+                      <span>Sessions: {debugSummary.total_sessions}</span>
+                      <span>Steps: {debugSummary.total_steps}</span>
+                      <span>Tools: {debugSummary.total_tools_used}</span>
+                      <span>Time: {debugSummary.total_processing_time.toFixed(2)}s</span>
+                    </div>
+                  )}
                 </div>
               )}
               {messages.map(message => (
@@ -443,9 +635,18 @@ export default function AIAssistantApp({ onAdminAccess, onPowerUserAccess }: AIA
         />
       )}
 
+      {/* Enhanced Debug Panel */}
+      {showEnhancedDebugPanel && activeConversation && currentUser && (
+        <EnhancedDebugPanel
+          conversationId={activeConversation.id}
+          userId={currentUser.id}
+          onClose={() => setShowEnhancedDebugPanel(false)}
+        />
+      )}
+
       {/* Debug Summary */}
       {showDebugSummary && activeConversation && currentUser && (
-        <DebugSummary
+        <DebugSummaryComponent
           conversationId={activeConversation.id}
           userId={currentUser.id}
           onClose={() => setShowDebugSummary(false)}

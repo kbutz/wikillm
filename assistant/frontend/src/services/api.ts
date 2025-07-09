@@ -1,6 +1,17 @@
-import { User, Conversation, UserMemory, Message, ChatRequestWithDebug, ChatResponseWithDebug } from '../types';
-
-import { DebugData } from '../types';
+import { 
+  User, 
+  Conversation, 
+  UserMemory, 
+  Message, 
+  ChatRequestWithDebug, 
+  ChatResponseWithDebug,
+  DebugData, 
+  DebugSession, 
+  DebugStep, 
+  LLMRequestPersistent,
+  ConversationDebugData,
+  DebugSummary
+} from '../types';
 
 export class ApiService {
   private baseUrl: string;
@@ -13,6 +24,7 @@ export class ApiService {
     return this.baseUrl;
   }
 
+  // User management methods (unchanged)
   async createUser(userData: { username: string; email?: string; full_name?: string }): Promise<User> {
     const response = await fetch(`${this.baseUrl}/users/`, {
       method: 'POST',
@@ -48,6 +60,7 @@ export class ApiService {
     return response.json();
   }
 
+  // Conversation management methods (unchanged)
   async getUserConversations(userId: number): Promise<Conversation[]> {
     const response = await fetch(`${this.baseUrl}/users/${userId}/conversations`);
 
@@ -72,6 +85,17 @@ export class ApiService {
     return response.json();
   }
 
+  async deleteConversation(conversationId: number, userId: number): Promise<void> {
+    const response = await fetch(`${this.baseUrl}/conversations/${conversationId}?user_id=${userId}`, {
+      method: 'DELETE'
+    });
+
+    if (!response.ok) {
+      throw new Error('Failed to delete conversation');
+    }
+  }
+
+  // Chat methods (unchanged)
   async sendMessage(data: { 
     message: string; 
     user_id: number; 
@@ -98,15 +122,14 @@ export class ApiService {
   }
 
   async sendMessageWithDebug(data: ChatRequestWithDebug): Promise<ChatResponseWithDebug> {
-    const response = await fetch(`${this.baseUrl}/chat/debug`, {
+    const response = await fetch(`${this.baseUrl}/debug/chat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         ...data,
-        include_intermediary_steps: data.include_intermediary_steps ?? true,
-        include_llm_request: data.include_llm_request ?? true,
-        include_tool_details: data.include_tool_details ?? true,
-        include_context_building: data.include_context_building ?? true
+        enable_tool_trace: true,
+        show_debug_steps: true,
+        trace_level: "detailed"
       })
     });
 
@@ -118,20 +141,26 @@ export class ApiService {
     return response.json();
   }
 
+  // Debug persistence methods (NEW)
+  async getConversationDebugData(conversationId: number, userId: number): Promise<{
+    conversation_id: number;
+    has_debug_data: boolean;
+    debug_data: ConversationDebugData;
+  }> {
+    const response = await fetch(`${this.baseUrl}/debug/conversations/${conversationId}/data?user_id=${userId}`);
+
+    if (!response.ok) {
+      throw new Error('Failed to get conversation debug data');
+    }
+
+    return response.json();
+  }
+
   async getConversationDebugSummary(conversationId: number, userId: number): Promise<{
     success: boolean;
-    data: {
-      conversation_id: number;
-      total_messages: number;
-      debug_messages: number;
-      total_steps: number;
-      total_tools_used: number;
-      total_processing_time: number;
-      average_processing_time: number;
-      debug_coverage: number;
-    };
+    data: DebugSummary;
   }> {
-    const response = await fetch(`${this.baseUrl}/conversations/${conversationId}/debug?user_id=${userId}`);
+    const response = await fetch(`${this.baseUrl}/debug/conversations/${conversationId}/summary?user_id=${userId}`);
 
     if (!response.ok) {
       throw new Error('Failed to get conversation debug summary');
@@ -140,6 +169,128 @@ export class ApiService {
     return response.json();
   }
 
+  async getUserDebugPreference(userId: number): Promise<{
+    success: boolean;
+    data: { enabled: boolean };
+  }> {
+    const response = await fetch(`${this.baseUrl}/debug/users/${userId}/preference`);
+
+    if (!response.ok) {
+      throw new Error('Failed to get user debug preference');
+    }
+
+    return response.json();
+  }
+
+  async setUserDebugPreference(userId: number, enabled: boolean): Promise<{
+    success: boolean;
+    message: string;
+  }> {
+    const response = await fetch(`${this.baseUrl}/debug/users/${userId}/preference`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled })
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.detail || 'Failed to set debug preference');
+    }
+
+    return response.json();
+  }
+
+  async endDebugSession(sessionId: string): Promise<{
+    success: boolean;
+    message: string;
+  }> {
+    const response = await fetch(`${this.baseUrl}/debug/sessions/${sessionId}/end`, {
+      method: 'POST'
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.detail || 'Failed to end debug session');
+    }
+
+    return response.json();
+  }
+
+  async cleanupOldDebugData(daysOld: number = 30): Promise<{
+    success: boolean;
+    message: string;
+  }> {
+    const response = await fetch(`${this.baseUrl}/debug/cleanup?days_old=${daysOld}`, {
+      method: 'POST'
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.detail || 'Failed to cleanup debug data');
+    }
+
+    return response.json();
+  }
+
+  async getToolAnalytics(conversationId: number, userId: number): Promise<{
+    success: boolean;
+    data: {
+      total_tool_calls: number;
+      tools_used: Record<string, number>;
+      success_rate: number;
+      most_used_tool?: string;
+      tool_timeline: Array<{
+        tool_name: string;
+        timestamp: string;
+        success: boolean;
+      }>;
+    };
+  }> {
+    const response = await fetch(`${this.baseUrl}/conversations/${conversationId}/tools/analytics?user_id=${userId}`);
+
+    if (!response.ok) {
+      throw new Error('Failed to get tool analytics');
+    }
+
+    return response.json();
+  }
+
+  // Debug script methods (unchanged)
+  async listDebugScripts(): Promise<Array<{
+    name: string;
+    description: string;
+    type: string;
+    path: string;
+  }>> {
+    const response = await fetch(`${this.baseUrl}/debug/scripts`);
+
+    if (!response.ok) {
+      throw new Error('Failed to list debug scripts');
+    }
+
+    return response.json();
+  }
+
+  async runDebugScript(scriptName: string): Promise<{
+    script_name: string;
+    success: boolean;
+    output: string;
+    error?: string;
+    execution_time: number;
+  }> {
+    const response = await fetch(`${this.baseUrl}/debug/scripts/${scriptName}/run`, {
+      method: 'POST'
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.detail || `Failed to run debug script: ${scriptName}`);
+    }
+
+    return response.json();
+  }
+
+  // Memory management methods (unchanged)
   async getUserMemory(userId: number): Promise<UserMemory[]> {
     const response = await fetch(`${this.baseUrl}/users/${userId}/memory`);
 
@@ -148,16 +299,6 @@ export class ApiService {
     }
 
     return response.json();
-  }
-
-  async deleteConversation(conversationId: number, userId: number): Promise<void> {
-    const response = await fetch(`${this.baseUrl}/conversations/${conversationId}?user_id=${userId}`, {
-      method: 'DELETE'
-    });
-
-    if (!response.ok) {
-      throw new Error('Failed to delete conversation');
-    }
   }
 
   async addUserMemory(userId: number, memory: {
@@ -210,6 +351,7 @@ export class ApiService {
     }
   }
 
+  // System status methods (unchanged)
   async getSystemStatus(): Promise<{
     status: string;
     version: string;
@@ -230,7 +372,7 @@ export class ApiService {
     return response.json();
   }
 
-  // MCP-related methods
+  // MCP-related methods (unchanged)
   async getMCPStatus(): Promise<{
     success: boolean;
     data: {
@@ -522,72 +664,29 @@ export class ApiService {
     return response.json();
   }
 
-  async getToolAnalytics(conversationId: number, userId: number): Promise<{
-    success: boolean;
-    data: {
-      total_tool_calls: number;
-      tools_used: Record<string, number>;
-      success_rate: number;
-      most_used_tool?: string;
-      tool_timeline: Array<{
-        tool_name: string;
-        timestamp: string;
-        success: boolean;
-      }>;
-    };
-  }> {
-    const response = await fetch(`${this.baseUrl}/conversations/${conversationId}/tools/analytics?user_id=${userId}`);
-
-    if (!response.ok) {
-      throw new Error('Failed to get tool analytics');
-    }
-
-    return response.json();
-  }
-
-  // Debug script methods
-  async listDebugScripts(): Promise<Array<{
-    name: string;
-    description: string;
-    type: string;
-    path: string;
-  }>> {
-    const response = await fetch(`${this.baseUrl}/debug/scripts`);
-
-    if (!response.ok) {
-      throw new Error('Failed to list debug scripts');
-    }
-
-    return response.json();
-  }
-
-  async runDebugScript(scriptName: string): Promise<{
-    script_name: string;
-    success: boolean;
-    output: string;
-    error?: string;
-    execution_time: number;
-  }> {
-    const response = await fetch(`${this.baseUrl}/debug/scripts/${scriptName}/run`, {
-      method: 'POST'
-    });
-
-    if (!response.ok) {
-      const error = await response.json();
-      throw new Error(error.detail || `Failed to run debug script: ${scriptName}`);
-    }
-
-    return response.json();
-  }
-
+  // Legacy support for existing code
   async getDebugData(conversationId: number, userId: number): Promise<DebugData> {
-    const response = await fetch(`${this.baseUrl}/conversations/${conversationId}/debug/data?user_id=${userId}`);
+    const response = await this.getConversationDebugData(conversationId, userId);
+    
+    // Transform the new format to match the old DebugData interface
+    const debugData: DebugData = {
+      timestamp: new Date().toISOString(),
+      steps: response.debug_data.messages.flatMap(msg => 
+        msg.debug_steps.map(step => ({
+          step_id: step.step_id,
+          step_type: step.step_type as any,
+          timestamp: step.timestamp,
+          title: step.title,
+          description: step.description,
+          data: step.input_data || {},
+          duration_ms: step.duration_ms,
+          success: step.success,
+          error_message: step.error_message
+        }))
+      )
+    };
 
-    if (!response.ok) {
-      throw new Error('Failed to get debug data');
-    }
-
-    return response.json();
+    return debugData;
   }
 }
 
