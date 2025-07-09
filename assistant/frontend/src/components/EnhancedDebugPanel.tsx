@@ -13,6 +13,12 @@ import {
   DebugFilter 
 } from '../types';
 
+// Helper function to replace escaped line breaks with actual line breaks
+const replaceEscapedLineBreaks = (text: string): string => {
+  if (!text) return '';
+  return text.replace(/\\n/g, '\n');
+};
+
 interface EnhancedDebugPanelProps {
   conversationId: number;
   userId: number;
@@ -41,13 +47,13 @@ export default function EnhancedDebugPanel({ conversationId, userId, onClose, in
   const loadDebugData = async () => {
     setLoading(true);
     setError(null);
-    
+
     try {
       const [dataResponse, summaryResponse] = await Promise.all([
         api.getConversationDebugData(conversationId, userId),
         api.getConversationDebugSummary(conversationId, userId)
       ]);
-      
+
       setDebugData(dataResponse.debug_data);
       setDebugSummary(summaryResponse.data);
     } catch (err) {
@@ -110,23 +116,23 @@ export default function EnhancedDebugPanel({ conversationId, userId, onClose, in
 
   const filteredMessages = debugData?.messages.filter(message => {
     if (!searchQuery && !filters.step_types?.length) return true;
-    
+
     const matchesSearch = !searchQuery || 
       message.content.toLowerCase().includes(searchQuery.toLowerCase()) ||
       message.debug_steps.some(step => 
         step.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
         step.description?.toLowerCase().includes(searchQuery.toLowerCase())
       );
-    
+
     const matchesFilters = !filters.step_types?.length ||
       message.debug_steps.some(step => filters.step_types?.includes(step.step_type));
-    
+
     return matchesSearch && matchesFilters;
   }) || [];
 
   const exportDebugData = () => {
     if (!debugData) return;
-    
+
     const exportData = {
       conversation_id: debugData.conversation_id,
       conversation_title: debugData.conversation_title,
@@ -135,7 +141,7 @@ export default function EnhancedDebugPanel({ conversationId, userId, onClose, in
       messages: debugData.messages,
       summary: debugSummary
     };
-    
+
     const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -151,7 +157,7 @@ export default function EnhancedDebugPanel({ conversationId, userId, onClose, in
     if (!window.confirm('Are you sure you want to clear all debug data for this conversation?')) {
       return;
     }
-    
+
     try {
       if (debugSummary?.sessions) {
         for (const session of debugSummary.sessions) {
@@ -160,7 +166,7 @@ export default function EnhancedDebugPanel({ conversationId, userId, onClose, in
           }
         }
       }
-      
+
       await loadDebugData();
     } catch (err) {
       setError('Failed to clear debug data');
@@ -280,7 +286,7 @@ export default function EnhancedDebugPanel({ conversationId, userId, onClose, in
                     {debugSummary?.active_sessions || 0} active
                   </p>
                 </div>
-                
+
                 <div className="bg-green-50 p-4 rounded-lg">
                   <div className="flex items-center justify-between">
                     <span className="text-sm text-green-600">Debug Steps</span>
@@ -293,7 +299,7 @@ export default function EnhancedDebugPanel({ conversationId, userId, onClose, in
                     Across {debugSummary?.total_messages || 0} messages
                   </p>
                 </div>
-                
+
                 <div className="bg-purple-50 p-4 rounded-lg">
                   <div className="flex items-center justify-between">
                     <span className="text-sm text-purple-600">Tools Used</span>
@@ -306,7 +312,7 @@ export default function EnhancedDebugPanel({ conversationId, userId, onClose, in
                     Tool executions
                   </p>
                 </div>
-                
+
                 <div className="bg-orange-50 p-4 rounded-lg">
                   <div className="flex items-center justify-between">
                     <span className="text-sm text-orange-600">Processing Time</span>
@@ -420,8 +426,8 @@ export default function EnhancedDebugPanel({ conversationId, userId, onClose, in
                           </span>
                           <span className="font-medium text-gray-900">
                             {message.content.length > 50 
-                              ? message.content.substring(0, 50) + '...' 
-                              : message.content
+                              ? replaceEscapedLineBreaks(message.content.substring(0, 50)) + '...' 
+                              : replaceEscapedLineBreaks(message.content)
                             }
                           </span>
                         </div>
@@ -432,7 +438,7 @@ export default function EnhancedDebugPanel({ conversationId, userId, onClose, in
                         </div>
                       </div>
                     </div>
-                    
+
                     {expandedMessages.has(message.message_id) && (
                       <div className="border-t border-gray-200 p-4 bg-gray-50">
                         <div className="space-y-3">
@@ -458,22 +464,22 @@ export default function EnhancedDebugPanel({ conversationId, userId, onClose, in
                                   )}
                                 </div>
                               </div>
-                              
+
                               {expandedSteps.has(step.step_id) && (
                                 <div className="mt-3 space-y-2">
                                   {step.description && (
-                                    <p className="text-sm text-gray-600">{step.description}</p>
+                                    <p className="text-sm text-gray-600">{replaceEscapedLineBreaks(step.description)}</p>
                                   )}
                                   {step.error_message && (
                                     <div className="p-2 bg-red-50 border border-red-200 rounded text-sm text-red-700">
-                                      {step.error_message}
+                                      {replaceEscapedLineBreaks(step.error_message)}
                                     </div>
                                   )}
                                   {step.input_data && Object.keys(step.input_data).length > 0 && (
                                     <div>
                                       <span className="text-sm font-medium text-gray-700">Input:</span>
                                       <pre className="text-xs bg-gray-100 p-2 rounded mt-1 overflow-x-auto">
-                                        {JSON.stringify(step.input_data, null, 2)}
+                                        {replaceEscapedLineBreaks(JSON.stringify(step.input_data, null, 2))}
                                       </pre>
                                     </div>
                                   )}
@@ -481,7 +487,7 @@ export default function EnhancedDebugPanel({ conversationId, userId, onClose, in
                                     <div>
                                       <span className="text-sm font-medium text-gray-700">Output:</span>
                                       <pre className="text-xs bg-gray-100 p-2 rounded mt-1 overflow-x-auto">
-                                        {JSON.stringify(step.output_data, null, 2)}
+                                        {replaceEscapedLineBreaks(JSON.stringify(step.output_data, null, 2))}
                                       </pre>
                                     </div>
                                   )}
@@ -520,7 +526,7 @@ export default function EnhancedDebugPanel({ conversationId, userId, onClose, in
                           )}
                         </div>
                       </div>
-                      
+
                       <div className="grid grid-cols-2 gap-4 text-sm">
                         <div>
                           <span className="font-medium text-gray-700">Temperature:</span> {request.temperature || 'default'}
@@ -535,7 +541,7 @@ export default function EnhancedDebugPanel({ conversationId, userId, onClose, in
                           <span className="font-medium text-gray-700">Tools Available:</span> {request.tools_available?.length || 0}
                         </div>
                       </div>
-                      
+
                       {request.tools_used && request.tools_used.length > 0 && (
                         <div className="mt-3">
                           <span className="text-sm font-medium text-gray-700">Tools Used:</span>
@@ -590,7 +596,7 @@ export default function EnhancedDebugPanel({ conversationId, userId, onClose, in
           {activeTab === 'export' && (
             <div className="space-y-6">
               <h3 className="text-lg font-medium text-gray-900">Export Debug Data</h3>
-              
+
               <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
                 <div className="flex items-center">
                   <AlertCircle className="w-5 h-5 text-yellow-600 mr-2" />

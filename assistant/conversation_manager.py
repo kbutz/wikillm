@@ -1,5 +1,5 @@
 """
-Conversation Management Service - Fixed Version
+Conversation Management Service - Enhanced Version with Consolidated User Profiles
 """
 import logging
 from typing import List, Optional, Dict, Any, Tuple
@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 
 class ConversationManager:
-    """Manages conversations and message history"""
+    """Manages conversations and message history with enhanced context building"""
 
     def __init__(self, db: Session):
         self.db = db
@@ -129,18 +129,26 @@ class ConversationManager:
         max_messages: int = 20,
         include_historical_context: bool = True
     ) -> List[Dict[str, str]]:
-        """Build conversation context for LLM with historical context"""
+        """Build conversation context for LLM with enhanced user profiles and structured history"""
         # Use enhanced memory manager if available
         try:
             from memory_manager import EnhancedMemoryManager
             enhanced_memory = EnhancedMemoryManager(self.db)
             use_enhanced = True
-        except:
+        except ImportError:
             enhanced_memory = None
             use_enhanced = False
 
-        # Get user memory context
-        memory_context = self.memory_manager.get_memory_context(user_id)
+        # Get user memory context from consolidated profile
+        if use_enhanced:
+            try:
+                user_profile = await enhanced_memory.get_consolidated_user_profile(user_id)
+                memory_context = self._format_user_profile_for_context(user_profile)
+            except Exception as e:
+                logger.warning(f"Could not get consolidated user profile: {e}")
+                memory_context = self.memory_manager.get_memory_context(user_id)
+        else:
+            memory_context = self.memory_manager.get_memory_context(user_id)
 
         # Get recent messages
         messages = self.get_recent_messages(conversation_id, max_messages)
@@ -158,12 +166,12 @@ class ConversationManager:
             if current_message:
                 try:
                     contextual_memory = await enhanced_memory.get_contextual_memories(
-                        user_id, current_message, limit=5
+                        user_id, current_message, limit=3
                     )
                 except Exception as e:
                     logger.warning(f"Could not get contextual memories: {e}")
 
-        # Get historical context if enabled
+        # Get structured historical context if enabled
         historical_context = ""
         if include_historical_context and messages:
             try:
@@ -178,29 +186,35 @@ class ConversationManager:
                         break
 
                 if current_message:
-                    related_conversations = await search_manager.get_related_conversations(
-                        user_id, current_message, limit=3
+                    structured_context = await search_manager.get_structured_historical_context(
+                        user_id, current_message, limit=2
                     )
-
-                    if related_conversations:
+                    
+                    if structured_context:
                         historical_parts = []
-                        for conv_summary in related_conversations:
-                            if conv_summary.conversation_id != conversation_id:
-                                # Check if conversation is not None before accessing title
-                                if conv_summary.conversation is not None:
-                                    historical_parts.append(
-                                        f"• {conv_summary.conversation.title}: {conv_summary.summary[:1000]}..."
-                                    )
-                                else:
-                                    # Use a default title if conversation is None
-                                    historical_parts.append(
-                                        f"• Previous conversation: {conv_summary.summary[:1000]}..."
-                                    )
-
+                        
+                        # Format relevant solutions
+                        if structured_context.get("relevant_solutions"):
+                            historical_parts.append("Previous solutions:")
+                            for solution in structured_context["relevant_solutions"][:2]:
+                                historical_parts.append(f"• {solution}")
+                        
+                        # Format project continuations
+                        if structured_context.get("project_continuations"):
+                            historical_parts.append("Project continuations:")
+                            for continuation in structured_context["project_continuations"][:2]:
+                                historical_parts.append(f"• {continuation}")
+                        
+                        # Format similar topics
+                        if structured_context.get("similar_topics"):
+                            topics = ", ".join(structured_context["similar_topics"][:4])
+                            historical_parts.append(f"Related topics: {topics}")
+                        
                         if historical_parts:
-                            historical_context = f"\n\nBased on previous conversations:\n{chr(10).join(historical_parts[:3])}"
+                            historical_context = f"\\n\\nFrom previous conversations:\\n{chr(10).join(historical_parts)}"
+                            
             except Exception as e:
-                logger.warning(f"Could not get historical context: {e}")
+                logger.warning(f"Could not get structured historical context: {e}")
                 historical_context = ""
 
         # Build context array
@@ -210,18 +224,18 @@ class ConversationManager:
         system_parts = ["You are a helpful AI assistant."]
 
         if memory_context:
-            system_parts.append(f"Here's what you know about the user:\n{memory_context}")
+            system_parts.append(f"Here's what you know about the user:\\n{memory_context}")
 
         if contextual_memory:
-            system_parts.append(f"\n{contextual_memory}")
+            system_parts.append(f"\\n{contextual_memory}")
 
         if historical_context:
             system_parts.append(historical_context)
 
         if len(system_parts) > 1:
-            system_parts.append("\nUse this information to provide personalized and relevant responses. Be natural and reference previous discussions when helpful.")
+            system_parts.append("\\nUse this information to provide personalized and contextually relevant responses.")
 
-        context.append({"role": "system", "content": "\n\n".join(system_parts)})
+        context.append({"role": "system", "content": "\\n\\n".join(system_parts)})
 
         # Add conversation messages
         for message in messages:
@@ -230,10 +244,48 @@ class ConversationManager:
                 "content": message.content
             })
 
-        logger.info(f"conversation_manager - Built context for conversation {conversation_id} with {len(context)} messages for user {user_id}")
-        logger.info(f"conversation_manager - Context: {context}")
+        logger.info(f"Built context for conversation {conversation_id} with {len(context)} messages for user {user_id}")
 
         return context
+
+    def _format_user_profile_for_context(self, user_profile: Dict[str, Any]) -> str:
+        """Format consolidated user profile for conversation context"""
+        if not user_profile:
+            return ""
+        
+        context_parts = []
+        
+        # Personal information
+        if user_profile.get("personal"):
+            personal_items = [f"{k}: {v}" for k, v in user_profile["personal"].items()]
+            if personal_items:
+                context_parts.append("Personal: " + "; ".join(personal_items[:3]))
+        
+        # Preferences
+        if user_profile.get("preferences"):
+            pref_items = [f"{k}: {v}" for k, v in user_profile["preferences"].items()]
+            if pref_items:
+                context_parts.append("Preferences: " + "; ".join(pref_items[:3]))
+        
+        # Skills
+        if user_profile.get("skills"):
+            skill_items = [f"{k}: {v}" for k, v in user_profile["skills"].items()]
+            if skill_items:
+                context_parts.append("Skills: " + "; ".join(skill_items[:3]))
+        
+        # Current projects
+        if user_profile.get("projects"):
+            project_items = [f"{k}: {v}" for k, v in user_profile["projects"].items()]
+            if project_items:
+                context_parts.append("Projects: " + "; ".join(project_items[:2]))
+        
+        # Context
+        if user_profile.get("context"):
+            context_items = [f"{k}: {v}" for k, v in user_profile["context"].items()]
+            if context_items:
+                context_parts.append("Context: " + "; ".join(context_items[:2]))
+        
+        return "\\n".join(context_parts) if context_parts else ""
 
     def delete_conversation(self, conversation_id: int, user_id: int) -> bool:
         """Soft delete a conversation"""
@@ -374,7 +426,7 @@ Keep the summary under 200 words and make it useful for future reference."""
                 },
                 {
                     "role": "user",
-                    "content": f"Summarize this conversation:\n\n{conversation_text}"
+                    "content": f"Summarize this conversation:\\n\\n{conversation_text}"
                 }
             ]
 
@@ -437,7 +489,7 @@ Keep the summary under 200 words and make it useful for future reference."""
             content = content[:500] + "..." if len(content) > 500 else content
             conversation_parts.append(f"{role_label}: {content}")
 
-        return "\n\n".join(conversation_parts)
+        return "\\n\\n".join(conversation_parts)
 
     def _generate_simple_summary(self, messages: List[Message]) -> str:
         """Generate simple summary as fallback"""
@@ -477,7 +529,7 @@ Keep the summary under 200 words and make it useful for future reference."""
         all_text = " ".join(cleaned_messages)
 
         # Extract words (3+ characters)
-        words = re.findall(r'\b[a-zA-Z]{3,}\b', all_text.lower())
+        words = re.findall(r'\\b[a-zA-Z]{3,}\\b', all_text.lower())
 
         # Remove common stop words
         stop_words = {'the', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'this', 'that', 'are', 'is', 'was', 'were', 'have', 'has', 'had', 'will', 'would', 'could', 'should', 'can', 'could', 'may', 'might', 'must', 'shall', 'should', 'will', 'would'}

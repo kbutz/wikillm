@@ -323,8 +323,8 @@ async def chat_with_mcp_tools(
             request.message
         )
 
-        # Build enhanced conversation context with MCP tools
-        context = await conv_manager.build_tool_enhanced_context(
+        # Build enhanced conversation context with optimized structure
+        context = await conv_manager.build_optimized_context(
             conversation.id,
             request.user_id,
             max_messages=settings.max_conversation_history,
@@ -499,8 +499,8 @@ async def chat_stream_with_mcp_tools(
                 request.message
             )
 
-            # Build context with MCP tools
-            context = await conv_manager.build_tool_enhanced_context(
+            # Build optimized context with relevant tools
+            context = await conv_manager.build_optimized_context(
                 conversation.id,
                 request.user_id,
                 max_messages=settings.max_conversation_history,
@@ -594,7 +594,7 @@ async def chat_stream_with_mcp_tools(
                 }
             )
 
-            # Background tasks
+            # Background tasks for enhanced memory extraction
             background_tasks.add_task(
                 extract_and_store_enhanced_memories,
                 request.user_id,
@@ -925,19 +925,34 @@ async def extract_and_store_enhanced_memories(
     conversation_id: int,
     enhanced_memory: EnhancedMemoryManager
 ):
-    """Enhanced background task to extract and store facts and memories"""
+    """Enhanced background task to extract and store facts and memories with deduplication"""
     try:
         memories = await enhanced_memory.extract_and_store_facts(
             user_id, user_message, assistant_response, conversation_id
         )
         if memories:
             logger.info(f"Stored {len(memories)} enhanced memories for user {user_id}")
+            
+            # Trigger memory consolidation periodically
+            if len(memories) > 3:  # If we stored many memories, consolidate
+                try:
+                    # Get total memory count for user
+                    total_memories = len(enhanced_memory.original_manager.get_user_memories(user_id))
+                    
+                    # Consolidate if we have many memories
+                    if total_memories > 50:
+                        enhanced_memory.original_manager.consolidate_memories(user_id)
+                        logger.info(f"Consolidated memories for user {user_id}")
+                        
+                except Exception as e:
+                    logger.error(f"Failed to consolidate memories: {e}")
+                    
     except Exception as e:
         logger.error(f"Failed to extract enhanced memories: {e}")
 
 
 async def auto_generate_title(conversation_id: int, conv_manager: EnhancedConversationManager):
-    """Background task to auto-generate conversation title"""
+    """Background task to auto-generate conversation title with better context"""
     try:
         title = await conv_manager.generate_conversation_title(conversation_id)
         if title:
@@ -952,10 +967,20 @@ async def auto_generate_title(conversation_id: int, conv_manager: EnhancedConver
 
 
 async def create_conversation_summary_task(conversation_id: int, conv_manager: EnhancedConversationManager):
-    """Background task to create conversation summary"""
+    """Background task to create conversation summary with priority calculation"""
     try:
         summary = await conv_manager.create_conversation_summary(conversation_id)
         if summary:
+            # Update priority score
+            try:
+                from search_manager import SearchManager
+                search_manager = SearchManager(conv_manager.db)
+                priority_score = search_manager.calculate_conversation_priority(conversation_id)
+                summary.priority_score = priority_score
+                conv_manager.db.commit()
+            except Exception as e:
+                logger.warning(f"Failed to update priority score: {e}")
+                
             logger.info(f"Created summary for conversation {conversation_id}")
     except Exception as e:
         logger.error(f"Failed to create conversation summary: {e}")

@@ -1,5 +1,5 @@
 """
-Enhanced Memory Management System with Entity and Relationship Extraction
+Enhanced Memory Management System with Consolidated User Profiles
 """
 import logging
 import re
@@ -8,6 +8,7 @@ from typing import Dict, List, Optional, Any, Tuple
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, or_, desc, func
 from datetime import datetime, timedelta
+from collections import defaultdict
 from models import UserMemory, UserPreference, User, Message
 from schemas import UserMemoryCreate, UserPreferenceCreate, MemoryType
 from lmstudio_client import lmstudio_client
@@ -17,12 +18,246 @@ logger = logging.getLogger(__name__)
 
 
 class EnhancedMemoryManager:
-    """Enhanced memory management with entity extraction and semantic search"""
+    """Enhanced memory management with consolidated user profiles and conflict resolution"""
 
     def __init__(self, db: Session):
         self.db = db
-        self.original_manager = MemoryManager(db)  # Keep original functionality
+        self.original_manager = MemoryManager(db)
         self.response_processor = LLMResponseProcessor()
+
+    async def get_consolidated_user_profile(self, user_id: int) -> Dict[str, Any]:
+        """Get consolidated, deduplicated user profile organized by category"""
+        try:
+            # Get all high-confidence memories (≥0.7 for system prompts)
+            memories = self.db.query(UserMemory).filter(
+                and_(
+                    UserMemory.user_id == user_id,
+                    UserMemory.confidence >= 0.7
+                )
+            ).order_by(
+                desc(UserMemory.confidence),
+                desc(UserMemory.updated_at)
+            ).all()
+
+            if not memories:
+                return {}
+
+            # Initialize profile structure
+            profile = {
+                "personal": {},      # Names, relationships, pets
+                "preferences": {},   # Likes, dislikes, communication style
+                "skills": {},        # Technical abilities, expertise
+                "projects": {},      # Current goals, projects
+                "context": {}        # Working directory, recent topics
+            }
+
+            # Categorize and consolidate memories
+            await self._categorize_memories(memories, profile)
+            
+            # Resolve conflicts and deduplicate
+            await self._resolve_memory_conflicts(profile)
+            
+            # Filter out empty categories
+            return {k: v for k, v in profile.items() if v}
+
+        except Exception as e:
+            logger.error(f"Failed to get consolidated user profile: {e}")
+            return {}
+
+    async def _categorize_memories(self, memories: List[UserMemory], profile: Dict[str, Any]):
+        """Categorize memories into structured profile sections"""
+        
+        # Category patterns for automatic classification
+        category_patterns = {
+            "personal": [
+                r"^name$", r"^pet_", r"^family_", r"^location$", r"^age$", r"^has_pet$"
+            ],
+            "preferences": [
+                r"^response_style$", r"^technical_level$", r"^favorite_", r"^likes_", 
+                r"^prefers_", r"^communication_"
+            ],
+            "skills": [
+                r"^skill_", r"^expertise_", r"^programming_", r"^language_", r"^technology_"
+            ],
+            "projects": [
+                r"^goal_", r"^project_", r"^working_on", r"^current_"
+            ],
+            "context": [
+                r"^allowed_directory", r"^recent_", r"^last_", r"^current_topic"
+            ]
+        }
+
+        for memory in memories:
+            # Determine category
+            category = self._determine_memory_category(memory.key, category_patterns)
+            
+            # Clean up the key for better presentation
+            clean_key = self._clean_memory_key(memory.key)
+            
+            # Store in appropriate category
+            if category and clean_key:
+                profile[category][clean_key] = memory.value
+
+    def _determine_memory_category(self, key: str, patterns: Dict[str, List[str]]) -> str:
+        """Determine which category a memory key belongs to"""
+        for category, pattern_list in patterns.items():
+            for pattern in pattern_list:
+                if re.match(pattern, key, re.IGNORECASE):
+                    return category
+        return "context"  # Default category
+
+    def _clean_memory_key(self, key: str) -> str:
+        """Clean memory key for better presentation"""
+        # Remove common prefixes
+        key = re.sub(r'^(pet_|family_|skill_|interest_|goal_|project_)', '', key)
+        
+        # Convert underscores to spaces and title case
+        key = key.replace('_', ' ').title()
+        
+        # Handle special cases
+        key = key.replace('Ai', 'AI').replace('Api', 'API').replace('Ui', 'UI')
+        
+        return key
+
+    async def _resolve_memory_conflicts(self, profile: Dict[str, Any]):
+        """Resolve conflicts and deduplicate similar memories"""
+        
+        # Define conflict resolution rules
+        conflict_groups = {
+            "pet_info": ["dog", "cat", "pet", "animal"],
+            "name_variations": ["name", "username", "full name"],
+            "location_info": ["location", "city", "home", "address"],
+            "programming_langs": ["python", "javascript", "java", "programming"]
+        }
+
+        for category_name, category_data in profile.items():
+            if not isinstance(category_data, dict):
+                continue
+                
+            # Check for conflicts within each category
+            for conflict_group, keywords in conflict_groups.items():
+                conflicting_keys = []
+                
+                for key in category_data.keys():
+                    if any(keyword in key.lower() for keyword in keywords):
+                        conflicting_keys.append(key)
+                
+                # Resolve conflicts by keeping the most specific/recent
+                if len(conflicting_keys) > 1:
+                    await self._resolve_conflict_group(category_data, conflicting_keys)
+
+    async def _resolve_conflict_group(self, category_data: Dict[str, str], conflicting_keys: List[str]):
+        """Resolve conflicts within a group of related keys"""
+        
+        # Create consolidated entry
+        consolidated_info = []
+        for key in conflicting_keys:
+            value = category_data[key]
+            # Skip obviously incorrect or duplicate values
+            if value and value.lower() not in ['true', 'false', 'unknown', 'undefined']:
+                consolidated_info.append(f"{key}: {value}")
+        
+        if consolidated_info:
+            # Use the first key as the primary key
+            primary_key = conflicting_keys[0]
+            if len(consolidated_info) == 1:
+                # Single item, use just the value
+                category_data[primary_key] = consolidated_info[0].split(': ', 1)[1]
+            else:
+                # Multiple items, create consolidated entry
+                category_data[primary_key] = "; ".join(consolidated_info)
+            
+            # Remove other conflicting keys
+            for key in conflicting_keys[1:]:
+                category_data.pop(key, None)
+
+    async def get_relevant_memories_for_query(
+        self,
+        user_id: int,
+        query: str,
+        limit: int = 5
+    ) -> List[UserMemory]:
+        """Get memories most relevant to a specific query"""
+        
+        # Get consolidated profile first
+        profile = await self.get_consolidated_user_profile(user_id)
+        
+        if not profile:
+            return []
+
+        # Use semantic search on consolidated profile
+        try:
+            # Create searchable text from profile
+            profile_text = self._flatten_profile_for_search(profile)
+            
+            # Use LLM to identify relevant sections
+            relevance_prompt = f"""
+            Given this user query: "{query}"
+            
+            And this user profile:
+            {profile_text}
+            
+            Which profile information is most relevant to the query?
+            Return the top 3-5 most relevant facts as a JSON array of strings.
+            
+            Example: ["name: John Doe", "skill: Python programming", "project: web scraper"]
+            """
+            
+            response = await lmstudio_client.chat_completion(
+                messages=[
+                    {"role": "system", "content": "You are a relevance assessment system. Return only JSON."},
+                    {"role": "user", "content": relevance_prompt}
+                ],
+                temperature=0.1,
+                max_tokens=200
+            )
+            
+            content = response["choices"][0]["message"]["content"].strip()
+            
+            # Extract JSON array
+            import json
+            try:
+                relevant_facts = json.loads(content)
+                
+                # Convert back to UserMemory objects for compatibility
+                relevant_memories = []
+                for fact in relevant_facts[:limit]:
+                    # Create pseudo-memory objects for consistency
+                    if ': ' in fact:
+                        key, value = fact.split(': ', 1)
+                        # Find original memory in database
+                        original_memory = self.db.query(UserMemory).filter(
+                            and_(
+                                UserMemory.user_id == user_id,
+                                UserMemory.value == value
+                            )
+                        ).first()
+                        
+                        if original_memory:
+                            relevant_memories.append(original_memory)
+                
+                return relevant_memories
+                
+            except json.JSONDecodeError:
+                logger.warning(f"Failed to parse relevance response: {content}")
+                return []
+                
+        except Exception as e:
+            logger.error(f"Relevance search failed: {e}")
+            return []
+
+    def _flatten_profile_for_search(self, profile: Dict[str, Any]) -> str:
+        """Flatten profile into searchable text"""
+        flattened = []
+        
+        for category, items in profile.items():
+            if isinstance(items, dict):
+                for key, value in items.items():
+                    flattened.append(f"{key}: {value}")
+            else:
+                flattened.append(f"{category}: {items}")
+        
+        return "\n".join(flattened)
 
     async def extract_and_store_facts(
         self, 
@@ -31,21 +266,21 @@ class EnhancedMemoryManager:
         assistant_response: str,
         conversation_id: int
     ) -> List[UserMemory]:
-        """Extract facts and entities from conversation using LLM"""
+        """Extract and store facts with improved deduplication"""
 
-        # First, use original extraction
+        # Use original extraction as baseline
         memories = self.original_manager.extract_implicit_memory(user_id, user_message, assistant_response)
 
-        # Then add advanced entity extraction
+        # Add advanced LLM-based extraction
         try:
             extracted_facts = await self._extract_facts_with_llm(user_message, assistant_response)
 
             for fact in extracted_facts:
-                # Check if this is a high-confidence fact worth storing
-                if fact.get("confidence", 0) >= 0.6:
+                # Higher confidence threshold for storage
+                if fact.get("confidence", 0) >= 0.7:
                     memory = UserMemoryCreate(
                         user_id=user_id,
-                        memory_type=MemoryType.EXPLICIT if fact.get("confidence", 0) >= 0.8 else MemoryType.IMPLICIT,
+                        memory_type=MemoryType.EXPLICIT if fact.get("confidence", 0) >= 0.85 else MemoryType.IMPLICIT,
                         key=fact["key"],
                         value=fact["value"],
                         confidence=fact["confidence"],
@@ -56,104 +291,149 @@ class EnhancedMemoryManager:
         except Exception as e:
             logger.error(f"LLM fact extraction failed: {e}")
 
-        # Store all memories
+        # Store and deduplicate
         if memories:
-            stored = self.original_manager.store_memories(memories)
+            stored = await self._store_and_deduplicate_memories(memories)
             logger.info(f"Stored {len(stored)} facts for user {user_id}")
             return stored
 
         return []
 
+    async def _store_and_deduplicate_memories(self, memories: List[UserMemoryCreate]) -> List[UserMemory]:
+        """Store memories with intelligent deduplication"""
+        stored_memories = []
+        
+        for memory in memories:
+            # Check for existing similar memories
+            existing_memories = self.db.query(UserMemory).filter(
+                and_(
+                    UserMemory.user_id == memory.user_id,
+                    UserMemory.key == memory.key
+                )
+            ).all()
+            
+            if existing_memories:
+                # Update or merge with existing memory
+                best_existing = max(existing_memories, key=lambda m: m.confidence)
+                
+                if memory.confidence > best_existing.confidence:
+                    # Update existing memory
+                    best_existing.value = memory.value
+                    best_existing.confidence = memory.confidence
+                    best_existing.updated_at = datetime.now()
+                    best_existing.source = memory.source
+                    
+                    # Remove other duplicates
+                    for existing in existing_memories:
+                        if existing.id != best_existing.id:
+                            self.db.delete(existing)
+                    
+                    stored_memories.append(best_existing)
+                else:
+                    # Keep existing memory, don't store new one
+                    stored_memories.append(best_existing)
+            else:
+                # Store new memory
+                db_memory = UserMemory(**memory.dict())
+                self.db.add(db_memory)
+                stored_memories.append(db_memory)
+        
+        self.db.commit()
+        
+        # Refresh stored memories
+        for memory in stored_memories:
+            self.db.refresh(memory)
+            
+        return stored_memories
+
     async def _extract_facts_with_llm(self, user_message: str, assistant_response: str) -> List[Dict[str, Any]]:
-        """Use LLM to extract facts and relationships with enhanced validation"""
+        """Enhanced fact extraction with better validation"""
         
-        # Clean assistant response to remove thinking tags
-        cleaned_assistant_response = self.response_processor.process_memory_extraction_text(assistant_response)
+        # Clean assistant response
+        cleaned_response = self.response_processor.process_memory_extraction_text(assistant_response)
         
-        extraction_prompt = f"""Extract important facts and relationships from this conversation exchange.
+        extraction_prompt = f"""Extract clear, factual information from this conversation.
+
+User: {user_message}
+Assistant: {cleaned_response}
+
 Focus on:
-1. Personal information (names, relationships, pets, family)
-2. Preferences and opinions
-3. Important dates or events
-4. Skills or interests
-5. Goals or plans
+1. Concrete personal facts (names, locations, ages, etc.)
+2. Clear preferences and opinions
+3. Specific skills or expertise mentioned
+4. Current projects or goals
+5. Technical details (programming languages, tools, etc.)
 
-User said: {user_message}
-Assistant responded: {cleaned_assistant_response}
+Return a JSON array. Each fact must have:
+- key: descriptive identifier (e.g., "pet_dog_name", "programming_language", "current_project")
+- value: the actual fact as a string
+- confidence: number 0.0-1.0 (only include facts with confidence ≥ 0.7)
 
-Return a JSON array of facts. Each fact MUST have:
-- key: a searchable identifier (e.g., "pet_dog_name", "favorite_food", "skill_programming")
-- value: the fact itself as a STRING (e.g., "Crosby", "pizza", "Python expert")
-- confidence: a number between 0.0 and 1.0
+Rules:
+- Only extract explicitly stated information
+- Avoid assumptions or inferences
+- Keep values factual and concise
+- Use consistent key naming (snake_case)
 
-IMPORTANT: The "value" field must ALWAYS be a string. Convert numbers, booleans, etc. to strings.
-
-Example format:
+Example:
 [
-  {{"key": "pet_dog_name", "value": "Crosby", "confidence": 0.95}},
-  {{"key": "dog_breed", "value": "Golden Retriever", "confidence": 0.8}},
-  {{"key": "user_age", "value": "25", "confidence": 0.9}},
-  {{"key": "likes_coffee", "value": "true", "confidence": 0.7}}
-]
-
-Extract only facts explicitly stated or strongly implied. Return only the JSON array, no other text."""
+  {{"key": "pet_dog_name", "value": "Max", "confidence": 0.9}},
+  {{"key": "programming_language", "value": "Python", "confidence": 0.8}},
+  {{"key": "current_project", "value": "web scraper", "confidence": 0.85}}
+]"""
 
         try:
             response = await lmstudio_client.chat_completion(
                 messages=[
-                    {"role": "system", "content": "You are a fact extraction system. Extract only clearly stated facts. Always ensure the 'value' field is a string."},
+                    {"role": "system", "content": "You are a precise fact extraction system. Extract only clear, factual information."},
                     {"role": "user", "content": extraction_prompt}
                 ],
-                temperature=0.1,  # Low temperature for consistent extraction
-                max_tokens=5000
+                temperature=0.1,
+                max_tokens=1000
             )
 
             content = response["choices"][0]["message"]["content"].strip()
 
-            # Extract JSON from response
+            # Extract and validate JSON
             json_match = re.search(r'\[.*\]', content, re.DOTALL)
             if json_match:
                 facts = json.loads(json_match.group())
-
-                # Validate and clean facts
-                validated_facts = []
-                for fact in facts:
-                    if self._validate_fact(fact):
-                        validated_facts.append(fact)
-                    else:
-                        logger.warning(f"Invalid fact filtered out: {fact}")
-
-                return validated_facts
-            else:
-                logger.warning(f"No valid JSON found in LLM response: {content}")
-                logger.warning(f"No valid JSON found in LLM response: {response}")
-                return []
-
-        except Exception as e:
-            logger.error(f"Failed to extract facts with LLM: {e}")
+                return [fact for fact in facts if self._validate_extracted_fact(fact)]
+            
             return []
 
-    def _validate_fact(self, fact: Dict[str, Any]) -> bool:
-        """Validate a fact dictionary and fix common issues"""
+        except Exception as e:
+            logger.error(f"LLM fact extraction failed: {e}")
+            return []
+
+    def _validate_extracted_fact(self, fact: Dict[str, Any]) -> bool:
+        """Validate extracted fact with enhanced rules"""
         try:
             # Check required fields
             if not all(key in fact for key in ['key', 'value', 'confidence']):
                 return False
 
-            # Ensure key is a string
-            if not isinstance(fact['key'], str) or not fact['key'].strip():
+            # Validate key format
+            key = fact['key']
+            if not isinstance(key, str) or not key.strip():
+                return False
+            
+            # Key should be descriptive (not too short)
+            if len(key) < 3:
                 return False
 
-            # Ensure confidence is a number between 0 and 1
-            if not isinstance(fact['confidence'], (int, float)) or not 0 <= fact['confidence'] <= 1:
+            # Validate confidence
+            confidence = fact['confidence']
+            if not isinstance(confidence, (int, float)) or not 0.7 <= confidence <= 1.0:
                 return False
 
-            # Convert value to string if it isn't already
-            if not isinstance(fact['value'], str):
-                fact['value'] = str(fact['value'])
+            # Validate value
+            value = str(fact['value']).strip()
+            if not value or value.lower() in ['true', 'false', 'unknown', 'undefined', 'null']:
+                return False
 
-            # Ensure value is not empty
-            if not fact['value'].strip():
+            # Value should be meaningful (not too short unless it's a name)
+            if len(value) < 2:
                 return False
 
             return True
@@ -162,119 +442,18 @@ Extract only facts explicitly stated or strongly implied. Return only the JSON a
             logger.warning(f"Fact validation failed: {e}")
             return False
 
-    async def search_memories_semantic(
-        self, 
-        user_id: int, 
-        query: str, 
-        limit: int = 10
-    ) -> List[UserMemory]:
-        """Search memories using semantic understanding"""
-
-        # First get all user memories
-        all_memories = self.db.query(UserMemory).filter(
-            UserMemory.user_id == user_id
-        ).order_by(desc(UserMemory.confidence)).limit(100).all()
-
-        if not all_memories:
-            return []
-
-        # Use LLM to rank memories by relevance to query
-        try:
-            memory_context = "\n".join([
-                f"{i+1}. [{m.key}] {m.value}" 
-                for i, m in enumerate(all_memories[:30])  # Limit for context
-            ])
-
-            ranking_prompt = f"""Given this query: "{query}"
-
-And these memories:
-{memory_context}
-
-Return the numbers of the 5 most relevant memories as a comma-separated list.
-For example: 3,7,1,15,9
-
-Only return the numbers, nothing else."""
-
-            response = await lmstudio_client.chat_completion(
-                messages=[
-                    {"role": "system", "content": "You are a memory ranking system."},
-                    {"role": "user", "content": ranking_prompt}
-                ],
-                temperature=0.1,
-                max_tokens=50
-            )
-
-            numbers_str = response["choices"][0]["message"]["content"].strip()
-            numbers = [int(n.strip()) - 1 for n in numbers_str.split(",") if n.strip().isdigit()]
-
-            # Return ranked memories
-            ranked_memories = []
-            for idx in numbers[:limit]:
-                if 0 <= idx < len(all_memories):
-                    ranked_memories.append(all_memories[idx])
-
-            return ranked_memories
-
-        except Exception as e:
-            logger.error(f"Semantic memory search failed: {e}")
-            # Fallback to keyword search
-            return self._fallback_keyword_search(all_memories, query, limit)
-
-    def _fallback_keyword_search(
-        self, 
-        memories: List[UserMemory], 
-        query: str, 
-        limit: int
-    ) -> List[UserMemory]:
-        """Fallback keyword-based search"""
-        query_lower = query.lower()
-        scored_memories = []
-
-        for memory in memories:
-            score = 0
-            key_lower = memory.key.lower()
-            value_lower = memory.value.lower()
-
-            # Exact matches get highest score
-            if query_lower in value_lower:
-                score += 10
-            if query_lower in key_lower:
-                score += 5
-
-            # Partial word matches
-            query_words = query_lower.split()
-            for word in query_words:
-                if len(word) > 2:  # Skip very short words
-                    if word in value_lower:
-                        score += 2
-                    if word in key_lower:
-                        score += 1
-
-            if score > 0:
-                scored_memories.append((score, memory))
-
-        # Sort by score and return top results
-        scored_memories.sort(key=lambda x: x[0], reverse=True)
-        return [memory for score, memory in scored_memories[:limit]]
-
     async def get_contextual_memories(
         self, 
         user_id: int, 
         current_message: str,
         limit: int = 5
     ) -> str:
-        """Get memories relevant to current message"""
-
-        relevant_memories = await self.search_memories_semantic(user_id, current_message, limit)
-
-        if not relevant_memories:
-            # Try to get most recent/important memories
-            relevant_memories = self.db.query(UserMemory).filter(
-                UserMemory.user_id == user_id
-            ).order_by(
-                desc(UserMemory.confidence),
-                desc(UserMemory.last_accessed)
-            ).limit(limit).all()
+        """Get contextual memories using consolidated profile"""
+        
+        # Get relevant memories for the current message
+        relevant_memories = await self.get_relevant_memories_for_query(
+            user_id, current_message, limit
+        )
 
         if not relevant_memories:
             return ""
@@ -285,30 +464,30 @@ Only return the numbers, nothing else."""
             memory.access_count += 1
         self.db.commit()
 
-        # Format memories for context
+        # Format for context
         memory_parts = []
         for memory in relevant_memories:
-            if memory.confidence >= 0.7:  # Only include confident memories
-                memory_parts.append(f"- {memory.key}: {memory.value}")
+            clean_key = self._clean_memory_key(memory.key)
+            memory_parts.append(f"- {clean_key}: {memory.value}")
 
         if memory_parts:
-            return "Relevant information from memory:\n" + "\n".join(memory_parts)
+            return "Relevant context:\n" + "\n".join(memory_parts)
 
         return ""
 
 
-# Keep original MemoryManager class for backward compatibility
+# Enhanced original MemoryManager with improved methods
 class MemoryManager:
-    """Original Memory Management System"""
+    """Enhanced original Memory Management System"""
 
     def __init__(self, db: Session):
         self.db = db
 
     def extract_implicit_memory(self, user_id: int, message: str, response: str) -> List[UserMemoryCreate]:
-        """Extract implicit memories from user interactions"""
+        """Extract implicit memories with improved patterns"""
         memories = []
 
-        # Extract preferences from conversation patterns
+        # Extract preferences
         preferences = self._extract_preferences(message, response)
         for pref in preferences:
             memories.append(UserMemoryCreate(
@@ -335,33 +514,33 @@ class MemoryManager:
         return memories
 
     def _extract_preferences(self, message: str, response: str) -> List[Dict[str, Any]]:
-        """Extract user preferences from conversation patterns"""
+        """Extract user preferences with improved detection"""
         preferences = []
 
-        # Communication style preferences
+        # Communication style
         if any(phrase in message.lower() for phrase in ["brief", "short", "concise", "quick"]):
             preferences.append({
-                "key": "response_style",
+                "key": "communication_style",
                 "value": "concise",
                 "confidence": 0.7
             })
 
-        if any(phrase in message.lower() for phrase in ["detailed", "thorough", "comprehensive", "in-depth"]):
+        if any(phrase in message.lower() for phrase in ["detailed", "thorough", "comprehensive"]):
             preferences.append({
-                "key": "response_style",
+                "key": "communication_style",
                 "value": "detailed",
                 "confidence": 0.7
             })
 
-        # Technical level preferences
-        if any(phrase in message.lower() for phrase in ["simple", "beginner", "new to", "don't understand"]):
+        # Technical level
+        if any(phrase in message.lower() for phrase in ["beginner", "new to", "don't understand"]):
             preferences.append({
                 "key": "technical_level",
                 "value": "beginner",
                 "confidence": 0.6
             })
 
-        if any(phrase in message.lower() for phrase in ["advanced", "expert", "professional", "technical"]):
+        if any(phrase in message.lower() for phrase in ["advanced", "expert", "professional"]):
             preferences.append({
                 "key": "technical_level",
                 "value": "advanced",
@@ -371,48 +550,8 @@ class MemoryManager:
         return preferences
 
     def _extract_personal_info(self, message: str) -> List[Dict[str, Any]]:
-        """Extract personal information from user messages"""
+        """Extract personal information with improved patterns"""
         personal_info = []
-
-        # Enhanced patterns for pets and relationships
-        pet_patterns = [
-            r"(?:my|I have a?) (\w+)'s name is ([A-Z][a-z]+)",
-            r"(?:my|I have a?) (\w+) (?:is )?(?:named|called) ([A-Z][a-z]+)",
-            r"([A-Z][a-z]+) is my (\w+)",
-            r"(?:my|I have a?) (\w+) ([A-Z][a-z]+)"  # "my dog Crosby"
-        ]
-
-        for pattern in pet_patterns:
-            matches = re.finditer(pattern, message, re.IGNORECASE)
-            for match in matches:
-                if len(match.groups()) == 2:
-                    # Determine which group is the pet type and which is the name
-                    group1, group2 = match.groups()
-
-                    # Common pet types
-                    pet_types = ['dog', 'cat', 'bird', 'fish', 'hamster', 'rabbit', 'turtle', 'pet']
-
-                    if group1.lower() in pet_types:
-                        pet_type = group1.lower()
-                        pet_name = group2
-                    elif group2.lower() in pet_types:
-                        pet_type = group2.lower()
-                        pet_name = group1
-                    else:
-                        continue
-
-                    personal_info.append({
-                        "key": f"pet_{pet_type}_name",
-                        "value": pet_name,
-                        "confidence": 0.9
-                    })
-
-                    # Also store as a general pet entry
-                    personal_info.append({
-                        "key": "has_pet",
-                        "value": f"{pet_type} named {pet_name}",
-                        "confidence": 0.9
-                    })
 
         # Name extraction
         name_patterns = [
@@ -429,36 +568,34 @@ class MemoryManager:
                     "confidence": 0.9
                 })
 
-        # Family relationships
-        family_patterns = [
-            r"(?:my|I have \w+) (wife|husband|spouse|partner|mother|father|mom|dad|son|daughter|brother|sister) (?:is )?(?:named|called)? ([A-Z][a-z]+)",
-            r"([A-Z][a-z]+) is my (wife|husband|spouse|partner|mother|father|mom|dad|son|daughter|brother|sister)"
+        # Pet information with improved accuracy
+        pet_patterns = [
+            r"(?:my|i have a?) (dog|cat|bird|fish|hamster|rabbit|turtle|pet) (?:is )?(?:named|called) ([A-Z][a-z]+)",
+            r"([A-Z][a-z]+) is my (dog|cat|bird|fish|hamster|rabbit|turtle|pet)"
         ]
 
-        for pattern in family_patterns:
+        for pattern in pet_patterns:
             matches = re.finditer(pattern, message, re.IGNORECASE)
             for match in matches:
                 groups = match.groups()
                 if len(groups) == 2:
-                    # Determine order
-                    if groups[1].lower() in ['wife', 'husband', 'spouse', 'partner', 'mother', 'father', 'mom', 'dad', 'son', 'daughter', 'brother', 'sister']:
-                        relation = groups[1].lower()
-                        name = groups[0]
+                    if groups[0].lower() in ['dog', 'cat', 'bird', 'fish', 'hamster', 'rabbit', 'turtle', 'pet']:
+                        pet_type = groups[0].lower()
+                        pet_name = groups[1]
                     else:
-                        relation = groups[0].lower()
-                        name = groups[1]
+                        pet_name = groups[0]
+                        pet_type = groups[1].lower()
 
                     personal_info.append({
-                        "key": f"family_{relation}_name",
-                        "value": name,
-                        "confidence": 0.85
+                        "key": f"pet_{pet_type}_name",
+                        "value": pet_name,
+                        "confidence": 0.9
                     })
 
         # Location extraction
         location_patterns = [
-            r"(?:I|i) (?:live|reside|stay) in ([A-Za-z\s]+)",
-            r"(?:I|i) am (?:from|in) ([A-Za-z\s]+)",
-            r"(?:my|My) (?:home|location|city|town) is ([A-Za-z\s]+)"
+            r"(?:i|I) (?:live|reside|stay) in ([A-Za-z\s]+)",
+            r"(?:i|I) am from ([A-Za-z\s]+)"
         ]
 
         for pattern in location_patterns:
@@ -468,62 +605,44 @@ class MemoryManager:
                 personal_info.append({
                     "key": "location",
                     "value": location,
-                    "confidence": 0.9
+                    "confidence": 0.8
                 })
-
-        # Hobbies and interests
-        hobby_patterns = [
-            r"(?:I|i) (?:like|love|enjoy|am interested in) (\w+(?:\s+\w+){0,2})",
-            r"(?:my|My) (?:hobby|hobbies|interest|interests) (?:is|are|include) (\w+(?:\s+\w+){0,2})"
-        ]
-
-        for pattern in hobby_patterns:
-            matches = re.finditer(pattern, message, re.IGNORECASE)
-            for match in matches:
-                hobby = match.group(1).strip().lower()
-                if len(hobby) > 2 and hobby not in ['to', 'the', 'a', 'an']:
-                    personal_info.append({
-                        "key": f"interest_{hobby.replace(' ', '_')}",
-                        "value": hobby,
-                        "confidence": 0.7
-                    })
 
         return personal_info
 
     def store_memory(self, memory: UserMemoryCreate) -> UserMemory:
-        """Store a single memory entry"""
-        # Check if similar memory already exists
+        """Store memory with conflict resolution"""
+        # Check for existing similar memories
         existing = self.db.query(UserMemory).filter(
             and_(
                 UserMemory.user_id == memory.user_id,
-                UserMemory.key == memory.key,
-                UserMemory.memory_type == memory.memory_type
+                UserMemory.key == memory.key
             )
         ).first()
 
         if existing:
-            # Update existing memory with higher confidence or newer information
-            if memory.confidence >= existing.confidence:
+            # Update if new memory has higher confidence
+            if memory.confidence > existing.confidence:
                 existing.value = memory.value
                 existing.confidence = memory.confidence
                 existing.updated_at = datetime.now()
-                existing.access_count += 1
+                existing.source = memory.source
                 self.db.commit()
                 return existing
             else:
                 return existing
 
-        # Create new memory entry
+        # Create new memory
         db_memory = UserMemory(**memory.dict())
         self.db.add(db_memory)
         self.db.commit()
         self.db.refresh(db_memory)
 
-        logger.info(f"Stored new memory: {memory.key} for user {memory.user_id}")
+        logger.info(f"Stored memory: {memory.key} for user {memory.user_id}")
         return db_memory
 
     def store_memories(self, memories: List[UserMemoryCreate]) -> List[UserMemory]:
-        """Store multiple memory entries"""
+        """Store multiple memories efficiently"""
         stored_memories = []
         for memory in memories:
             stored_memory = self.store_memory(memory)
@@ -537,7 +656,7 @@ class MemoryManager:
         key_pattern: Optional[str] = None,
         limit: int = 100
     ) -> List[UserMemory]:
-        """Retrieve user memories with optional filtering"""
+        """Get user memories with filtering"""
         query = self.db.query(UserMemory).filter(UserMemory.user_id == user_id)
 
         if memory_type:
@@ -546,31 +665,29 @@ class MemoryManager:
         if key_pattern:
             query = query.filter(UserMemory.key.like(f"%{key_pattern}%"))
 
-        return query.order_by(desc(UserMemory.last_accessed)).limit(limit).all()
+        return query.order_by(desc(UserMemory.confidence), desc(UserMemory.last_accessed)).limit(limit).all()
 
     def get_memory_context(self, user_id: int) -> str:
-        """Generate context string from user memories for AI prompting"""
+        """Get memory context - deprecated, use enhanced version"""
+        logger.warning("get_memory_context is deprecated, use get_consolidated_user_profile instead")
+        
         memories = self.get_user_memories(user_id, limit=20)
-
         if not memories:
             return ""
 
         context_parts = []
-
-        # Group memories by type
-        explicit_memories = [m for m in memories if m.memory_type == MemoryType.EXPLICIT]
-        implicit_memories = [m for m in memories if m.memory_type == MemoryType.IMPLICIT]
+        explicit_memories = [m for m in memories if m.memory_type == MemoryType.EXPLICIT and m.confidence >= 0.7]
+        implicit_memories = [m for m in memories if m.memory_type == MemoryType.IMPLICIT and m.confidence >= 0.6]
 
         if explicit_memories:
-            context_parts.append("User has explicitly mentioned:")
-            for memory in explicit_memories[:5]:  # Top 5 explicit
+            context_parts.append("Key facts:")
+            for memory in explicit_memories[:5]:
                 context_parts.append(f"- {memory.key}: {memory.value}")
 
         if implicit_memories:
-            context_parts.append("\nBased on conversation patterns:")
-            for memory in implicit_memories[:10]:  # Top 10 implicit
-                if memory.confidence > 0.5:  # Only include confident predictions
-                    context_parts.append(f"- {memory.key}: {memory.value}")
+            context_parts.append("Inferred preferences:")
+            for memory in implicit_memories[:5]:
+                context_parts.append(f"- {memory.key}: {memory.value}")
 
         return "\n".join(context_parts)
 
@@ -582,35 +699,8 @@ class MemoryManager:
             memory.access_count += 1
             self.db.commit()
 
-    def consolidate_memories(self, user_id: int):
-        """Consolidate similar memories to reduce redundancy"""
-        memories = self.get_user_memories(user_id)
-
-        # Group by key and memory type
-        memory_groups = {}
-        for memory in memories:
-            key = (memory.key, memory.memory_type)
-            if key not in memory_groups:
-                memory_groups[key] = []
-            memory_groups[key].append(memory)
-
-        # Consolidate groups with multiple entries
-        for (key, memory_type), group in memory_groups.items():
-            if len(group) > 1:
-                # Keep the most confident and recent memory
-                best_memory = max(group, key=lambda m: (m.confidence, m.updated_at))
-
-                # Remove others
-                for memory in group:
-                    if memory.id != best_memory.id:
-                        self.db.delete(memory)
-
-                logger.info(f"Consolidated {len(group)} memories for key: {key}")
-
-        self.db.commit()
-
     def get_user_preferences(self, user_id: int) -> Dict[str, Any]:
-        """Get user preferences as a dictionary"""
+        """Get user preferences"""
         preferences = self.db.query(UserPreference).filter(
             UserPreference.user_id == user_id
         ).all()
@@ -624,7 +714,7 @@ class MemoryManager:
         return pref_dict
 
     def set_user_preference(self, user_id: int, category: str, key: str, value: Any) -> UserPreference:
-        """Set a user preference"""
+        """Set user preference"""
         existing = self.db.query(UserPreference).filter(
             and_(
                 UserPreference.user_id == user_id,
