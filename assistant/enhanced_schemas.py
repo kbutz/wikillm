@@ -5,8 +5,9 @@ from typing import List, Optional, Dict, Any, Union, ForwardRef
 from datetime import datetime
 from enum import Enum
 
-# Import Message model
-from models import Message
+# Import Message model from schemas for serialization
+from schemas import Message as MessageSchema
+from models import Message as MessageModel
 
 
 class ToolUsageStep(BaseModel):
@@ -74,7 +75,7 @@ class ChatRequestWithDebug(BaseModel):
 
 class ChatResponseWithDebug(BaseModel):
     """Extended chat response with debug information"""
-    message: Any  # Using Any instead of Message to avoid schema generation issues
+    message: MessageSchema  # Using the Pydantic Message model for proper serialization
     conversation_id: int
     processing_time: float
     token_count: Optional[int] = None
@@ -84,7 +85,7 @@ class ChatResponseWithDebug(BaseModel):
     debug_enabled: bool = Field(False, description="Whether debug mode was enabled")
 
     class Config:
-        arbitrary_types_allowed = True  # Allow arbitrary types like Message
+        from_attributes = True
 
 
 class ToolUsageAnalytics(BaseModel):

@@ -1,14 +1,25 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Send, MessageSquare, Plus, Trash2, User, Settings, Brain, Clock, Database, Shield, Bug, BarChart3 } from 'lucide-react';
+import { Send, MessageSquare, Plus, Trash2, User, Settings, Brain, Clock, Database, Shield, Bug, BarChart3, History, Archive, Zap } from 'lucide-react';
 import { ApiService } from '../services/api';
-import { User as UserType, Message, Conversation, UserMemory, ChatRequestWithDebug, ChatResponse, ChatResponseWithDebug } from '../types';
+import { 
+  User as UserType, 
+  Message, 
+  Conversation, 
+  UserMemory, 
+  ChatRequestWithDebug, 
+  ChatResponse, 
+  ChatResponseWithDebug,
+  DebugPreference,
+  DebugSummary
+} from '../types';
 import MessageBubble from './MessageBubble';
 import LoadingMessage from './LoadingMessage';
 import UserSetupModal from './UserSetupModal';
 import MemoryPanel from './MemoryPanel';
 import DebugPanel from './DebugPanel';
 import MCPDebugPanel from './MCPDebugPanel';
-import DebugSummary from './DebugSummary';
+import DebugSummaryComponent from './DebugSummary';
+import EnhancedDebugPanel from './EnhancedDebugPanel';
 
 const api = new ApiService();
 
@@ -29,8 +40,90 @@ export default function AIAssistantApp({ onAdminAccess, onPowerUserAccess }: AIA
   const [showMemories, setShowMemories] = useState(false);
   const [showDebugPanel, setShowDebugPanel] = useState(false);
   const [showDebugSummary, setShowDebugSummary] = useState(false);
+  const [showEnhancedDebugPanel, setShowEnhancedDebugPanel] = useState(false);
+  const [enhancedDebugPanelTab, setEnhancedDebugPanelTab] = useState<'overview' | 'steps' | 'llm' | 'timeline' | 'export'>('overview');
   const [debugMode, setDebugMode] = useState(false);
+  const [debugPreference, setDebugPreference] = useState<DebugPreference>({ enabled: false });
+  const [debugSummary, setDebugSummary] = useState<DebugSummary | null>(null);
+  const [isLoadingDebugData, setIsLoadingDebugData] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  // Load debug preference from backend and localStorage
+  useEffect(() => {
+    const loadDebugPreference = async () => {
+      if (currentUser) {
+        try {
+          // Load from backend
+          const response = await api.getUserDebugPreference(currentUser.id);
+          const serverPreference = response.data.enabled;
+
+          // Check localStorage for session-specific preference
+          const localPreference = localStorage.getItem(`debugMode_${currentUser.id}`);
+          const localEnabled = localPreference === 'true';
+
+          // Use localStorage value if it exists, otherwise use server preference
+          const finalEnabled = localPreference !== null ? localEnabled : serverPreference;
+
+          setDebugMode(finalEnabled);
+          setDebugPreference({ enabled: finalEnabled });
+
+          // Sync localStorage with final decision
+          localStorage.setItem(`debugMode_${currentUser.id}`, finalEnabled.toString());
+        } catch (error) {
+          console.error('Failed to load debug preference:', error);
+          // Fallback to localStorage only
+          const localPreference = localStorage.getItem(`debugMode_${currentUser.id}`);
+          if (localPreference !== null) {
+            const enabled = localPreference === 'true';
+            setDebugMode(enabled);
+            setDebugPreference({ enabled });
+          }
+        }
+      }
+    };
+
+    loadDebugPreference();
+  }, [currentUser]);
+
+  // Save debug preference to backend and localStorage
+  const updateDebugPreference = async (enabled: boolean) => {
+    if (!currentUser) return;
+
+    try {
+      // Update localStorage immediately for instant UI response
+      localStorage.setItem(`debugMode_${currentUser.id}`, enabled.toString());
+      setDebugMode(enabled);
+      setDebugPreference({ enabled });
+
+      // Update backend preference
+      await api.setUserDebugPreference(currentUser.id, enabled);
+    } catch (error) {
+      console.error('Failed to save debug preference:', error);
+      // Keep localStorage change even if backend fails
+    }
+  };
+
+  // Load debug summary for active conversation
+  useEffect(() => {
+    const loadDebugSummary = async () => {
+      if (activeConversation && currentUser && debugMode) {
+        try {
+          setIsLoadingDebugData(true);
+          const response = await api.getConversationDebugSummary(activeConversation.id, currentUser.id);
+          setDebugSummary(response.data);
+        } catch (error) {
+          console.error('Failed to load debug summary:', error);
+          setDebugSummary(null);
+        } finally {
+          setIsLoadingDebugData(false);
+        }
+      } else {
+        setDebugSummary(null);
+      }
+    };
+
+    loadDebugSummary();
+  }, [activeConversation, currentUser, debugMode]);
 
   // Initialize user
   const handleUserSetup = async (userData: { username: string; email?: string; full_name?: string }) => {
@@ -82,6 +175,7 @@ export default function AIAssistantApp({ onAdminAccess, onPowerUserAccess }: AIA
       setConversations(prev => [conv, ...prev]);
       setActiveConversation(conv);
       setMessages([]);
+      setDebugSummary(null); // Reset debug summary for new conversation
     } catch (error) {
       console.error('Failed to create conversation:', error);
     }
@@ -111,6 +205,9 @@ export default function AIAssistantApp({ onAdminAccess, onPowerUserAccess }: AIA
           message: newMessage,
           user_id: currentUser.id,
           conversation_id: activeConversation?.id,
+          enable_tool_trace: true,
+          show_debug_steps: true,
+          trace_level: "detailed",
           include_intermediary_steps: true,
           include_llm_request: true,
           include_tool_details: true,
@@ -129,12 +226,106 @@ export default function AIAssistantApp({ onAdminAccess, onPowerUserAccess }: AIA
 
       setMessages(prev => [...prev, response.message]);
 
+      // Debug: Log the response message to see what debug data is included
+      if (debugMode) {
+        console.log('=== DEBUG MODE RESPONSE ===');
+        console.log('Full response:', response);
+        console.log('Response message:', response.message);
+        
+        // Log specific debug fields
+        if (response.message) {
+          console.log('Message ID:', response.message.id);
+          console.log('Debug enabled:', response.message.debug_enabled);
+          console.log('Intermediary steps:', response.message.intermediary_steps);
+          console.log('LLM request:', response.message.llm_request);
+          console.log('LLM response:', response.message.llm_response);
+          console.log('Tool calls:', response.message.tool_calls);
+          console.log('Tool results:', response.message.tool_results);
+        }
+        
+        // Log the full ChatResponseWithDebug fields
+        if ('tool_trace' in response) {
+          console.log('Tool trace:', response.tool_trace);
+          console.log('Debug enabled flag:', response.debug_enabled);
+          console.log('Total steps:', response.total_steps);
+          console.log('Tools used:', response.tools_used);
+        }
+        console.log('=== END DEBUG INFO ===');
+      }
+
       // Update active conversation or create new one
       if (!activeConversation) {
         const updatedConvs = await api.getUserConversations(currentUser.id);
         setConversations(updatedConvs);
         const newConv = updatedConvs.find(c => c.id === response.conversation_id);
         if (newConv) setActiveConversation(newConv);
+      }
+
+      // Reload debug summary if in debug mode
+      if (debugMode && activeConversation) {
+        try {
+          const debugResponse = await api.getConversationDebugSummary(activeConversation.id, currentUser.id);
+          setDebugSummary(debugResponse.data);
+          
+          // If the message doesn't have debug data, try to fetch it separately
+          if (!response.message.intermediary_steps && !response.message.llm_request) {
+            console.log('Message missing debug data, attempting to fetch from debug data endpoint');
+            
+            const debugData = await api.getConversationDebugData(activeConversation.id, currentUser.id);
+            
+            if (debugData.has_debug_data && debugData.debug_data.messages.length > 0) {
+              // Find the most recent message (should be our response)
+              const latestDebugMessage = debugData.debug_data.messages[debugData.debug_data.messages.length - 1];
+              
+              if (latestDebugMessage.message_id === response.message.id) {
+                console.log('Found matching debug data for message:', latestDebugMessage);
+                
+                // Update the message with debug data
+                setMessages(prev => prev.map(msg => 
+                  msg.id === response.message.id 
+                    ? {
+                        ...msg,
+                        intermediary_steps: latestDebugMessage.debug_steps.map(step => ({
+                          step_id: step.step_id,
+                          step_type: step.step_type as 'tool_call' | 'tool_result' | 'memory_retrieval' | 'context_building' | 'llm_request' | 'llm_response' | 'error',
+                          timestamp: step.timestamp,
+                          title: step.title,
+                          description: step.description,
+                          data: step.input_data || {},
+                          duration_ms: step.duration_ms,
+                          success: step.success,
+                          error_message: step.error_message
+                        })),
+                        llm_request: latestDebugMessage.llm_requests[0] ? {
+                          model: latestDebugMessage.llm_requests[0].model,
+                          messages: latestDebugMessage.llm_requests[0].request_messages,
+                          temperature: latestDebugMessage.llm_requests[0].temperature,
+                          max_tokens: latestDebugMessage.llm_requests[0].max_tokens,
+                          tools: latestDebugMessage.llm_requests[0].tools_available,
+                          tool_choice: latestDebugMessage.llm_requests[0].tools_available && latestDebugMessage.llm_requests[0].tools_available.length > 0 ? 'auto' : undefined,
+                          stream: latestDebugMessage.llm_requests[0].stream,
+                          timestamp: latestDebugMessage.llm_requests[0].timestamp
+                        } : undefined,
+                        llm_response: latestDebugMessage.llm_requests[0] ? {
+                          response: latestDebugMessage.llm_requests[0].response_data,
+                          timestamp: latestDebugMessage.llm_requests[0].timestamp,
+                          processing_time_ms: latestDebugMessage.llm_requests[0].processing_time_ms ?? 0,
+                          token_usage: latestDebugMessage.llm_requests[0].token_usage
+                        } : undefined,
+                        tool_calls: latestDebugMessage.llm_requests[0]?.tool_calls,
+                        tool_results: latestDebugMessage.llm_requests[0]?.tool_results,
+                        debug_enabled: true
+                      } as Message
+                    : msg
+                ));
+                
+                console.log('Successfully merged debug data into message');
+              }
+            }
+          }
+        } catch (error) {
+          console.error('Failed to reload debug summary:', error);
+        }
       }
     } catch (error) {
       console.error('Failed to send message:', error);
@@ -192,9 +383,48 @@ export default function AIAssistantApp({ onAdminAccess, onPowerUserAccess }: AIA
       if (activeConversation?.id === conversationId) {
         setActiveConversation(null);
         setMessages([]);
+        setDebugSummary(null);
       }
     } catch (error) {
       console.error('Failed to delete conversation:', error);
+    }
+  };
+
+  // Helper functions for debug panel navigation
+  const openDebugSteps = () => {
+    setEnhancedDebugPanelTab('steps');
+    setShowEnhancedDebugPanel(true);
+  };
+
+  const openDebugLLM = () => {
+    setEnhancedDebugPanelTab('llm');
+    setShowEnhancedDebugPanel(true);
+  };
+
+  const openDebugOverview = () => {
+    setEnhancedDebugPanelTab('overview');
+    setShowEnhancedDebugPanel(true);
+  };
+
+  // Clear debug data for conversation
+  const clearDebugData = async () => {
+    if (!activeConversation || !currentUser) return;
+
+    try {
+      // End all active debug sessions for this conversation
+      if (debugSummary?.sessions) {
+        for (const session of debugSummary.sessions) {
+          if (session.is_active) {
+            await api.endDebugSession(session.session_id);
+          }
+        }
+      }
+
+      // Reload debug summary
+      const response = await api.getConversationDebugSummary(activeConversation.id, currentUser.id);
+      setDebugSummary(response.data);
+    } catch (error) {
+      console.error('Failed to clear debug data:', error);
     }
   };
 
@@ -219,6 +449,33 @@ export default function AIAssistantApp({ onAdminAccess, onPowerUserAccess }: AIA
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
+  // Keyboard shortcuts for debug features
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      // Only handle shortcuts if debug mode is active and we have an active conversation
+      if (!debugMode || !activeConversation) return;
+
+      // Ctrl/Cmd + D for debug steps
+      if ((event.ctrlKey || event.metaKey) && event.key === 'd') {
+        event.preventDefault();
+        openDebugSteps();
+      }
+      // Ctrl/Cmd + L for LLM requests
+      else if ((event.ctrlKey || event.metaKey) && event.key === 'l') {
+        event.preventDefault();
+        openDebugLLM();
+      }
+      // Ctrl/Cmd + Shift + D for debug overview
+      else if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key === 'D') {
+        event.preventDefault();
+        openDebugOverview();
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [debugMode, activeConversation]);
+
   if (showUserSetup) {
     return <UserSetupModal onSetup={handleUserSetup} onSelectUser={handleUserSelect} />;
   }
@@ -233,7 +490,7 @@ export default function AIAssistantApp({ onAdminAccess, onPowerUserAccess }: AIA
             <h1 className="text-xl font-bold text-gray-900">AI Assistant</h1>
             <div className="flex items-center gap-2">
               <button
-                onClick={() => setDebugMode(!debugMode)}
+                onClick={() => updateDebugPreference(!debugMode)}
                 className={`p-2 rounded-lg transition-colors ${
                   debugMode 
                     ? 'bg-green-100 text-green-600 hover:bg-green-200' 
@@ -298,9 +555,40 @@ export default function AIAssistantApp({ onAdminAccess, onPowerUserAccess }: AIA
             >
               <div className="flex items-center justify-between">
                 <div className="flex-1 min-w-0">
-                  <h3 className="text-sm font-medium text-gray-900 truncate">
-                    {conversation.title}
-                  </h3>
+                  <div className="flex items-center gap-2">
+                    <h3 className="text-sm font-medium text-gray-900 truncate">
+                      {conversation.title}
+                    </h3>
+                    {/* Debug indicator */}
+                    {debugMode && activeConversation?.id === conversation.id && debugSummary?.has_debug_data && (
+                      <div className="flex items-center gap-1">
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            openDebugSteps();
+                          }}
+                          className="flex items-center gap-1 px-1 py-0.5 bg-green-100 text-green-700 rounded text-xs hover:bg-green-200 transition-colors"
+                          title="Click to view debug steps"
+                        >
+                          <Bug className="w-3 h-3" />
+                          <span className="font-medium">{debugSummary.total_steps}</span>
+                        </button>
+                        {debugSummary.total_tools_used > 0 && (
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              openDebugLLM();
+                            }}
+                            className="flex items-center gap-1 px-1 py-0.5 bg-blue-100 text-blue-700 rounded text-xs hover:bg-blue-200 transition-colors"
+                            title="Click to view LLM requests"
+                          >
+                            <Database className="w-3 h-3" />
+                            <span className="font-medium">{debugSummary.total_tools_used}</span>
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </div>
                   <p className="text-xs text-gray-500 mt-1">
                     {new Date(conversation.updated_at).toLocaleDateString()}
                   </p>
@@ -330,14 +618,28 @@ export default function AIAssistantApp({ onAdminAccess, onPowerUserAccess }: AIA
         {/* User Info */}
         {currentUser && (
           <div className="p-4 border-t border-gray-200">
-            <div className="flex items-center">
-              <div className="w-8 h-8 bg-blue-100 rounded-full flex items-center justify-center">
-                <User className="w-4 h-4 text-blue-600" />
+            <div className="flex items-center justify-between">
+              <div className="flex items-center">
+                <div className="w-8 h-8 bg-blue-100 rounded-full flex items-center justify-center">
+                  <User className="w-4 h-4 text-blue-600" />
+                </div>
+                <div className="ml-3">
+                  <p className="text-sm font-medium text-gray-900">{currentUser.username}</p>
+                  <p className="text-xs text-gray-500">{currentUser.email}</p>
+                </div>
               </div>
-              <div className="ml-3">
-                <p className="text-sm font-medium text-gray-900">{currentUser.username}</p>
-                <p className="text-xs text-gray-500">{currentUser.email}</p>
-              </div>
+              {debugMode && (
+                <div className="flex items-center gap-1">
+                  <button
+                    onClick={openDebugOverview}
+                    className="flex items-center gap-1 px-2 py-1 bg-green-100 text-green-600 rounded hover:bg-green-200 transition-colors"
+                    title="Debug mode active - Click for overview"
+                  >
+                    <Bug className="w-4 h-4" />
+                    <span className="text-xs font-medium">Debug</span>
+                  </button>
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -350,19 +652,67 @@ export default function AIAssistantApp({ onAdminAccess, onPowerUserAccess }: AIA
             {/* Chat Header */}
             <div className="px-6 py-4 border-b border-gray-200 bg-white">
               <div className="flex items-center justify-between">
-                <h2 className="text-lg font-semibold text-gray-900">
-                  {activeConversation.title}
-                </h2>
-                {debugMode && (
-                  <button
-                    onClick={() => setShowDebugSummary(true)}
-                    className="flex items-center gap-2 px-3 py-1 bg-blue-100 text-blue-800 rounded-lg hover:bg-blue-200 transition-colors"
-                    title="View Debug Summary"
-                  >
-                    <BarChart3 className="w-4 h-4" />
-                    <span className="text-sm font-medium">Debug Summary</span>
-                  </button>
-                )}
+                <div className="flex items-center gap-3">
+                  <h2 className="text-lg font-semibold text-gray-900">
+                    {activeConversation.title}
+                  </h2>
+                  {debugMode && debugSummary?.has_debug_data && (
+                    <div className="flex items-center gap-2 text-sm text-gray-600">
+                      <Clock className="w-4 h-4" />
+                      <span>{debugSummary.total_steps} steps</span>
+                      <span>•</span>
+                      <span>{debugSummary.total_processing_time.toFixed(2)}s</span>
+                    </div>
+                  )}
+                </div>
+                <div className="flex items-center gap-2">
+                  {debugMode && (
+                    <>
+                      <button
+                        onClick={openDebugSteps}
+                        className="flex items-center gap-1 px-2 py-1 bg-purple-100 text-purple-800 rounded hover:bg-purple-200 transition-colors"
+                        title="View Debug Steps (Ctrl/Cmd + D)"
+                      >
+                        <Zap className="w-3 h-3" />
+                        <span className="text-xs font-medium">Steps</span>
+                      </button>
+                      <button
+                        onClick={openDebugLLM}
+                        className="flex items-center gap-1 px-2 py-1 bg-green-100 text-green-800 rounded hover:bg-green-200 transition-colors"
+                        title="View LLM Requests (Ctrl/Cmd + L)"
+                      >
+                        <Database className="w-3 h-3" />
+                        <span className="text-xs font-medium">LLM</span>
+                      </button>
+                      <button
+                        onClick={openDebugOverview}
+                        className="flex items-center gap-1 px-2 py-1 bg-blue-100 text-blue-800 rounded hover:bg-blue-200 transition-colors"
+                        title="View Debug Overview (Ctrl/Cmd + Shift + D)"
+                      >
+                        <BarChart3 className="w-3 h-3" />
+                        <span className="text-xs font-medium">Overview</span>
+                      </button>
+                      <button
+                        onClick={() => setShowDebugSummary(true)}
+                        className="flex items-center gap-1 px-2 py-1 bg-orange-100 text-orange-800 rounded hover:bg-orange-200 transition-colors"
+                        title="View Debug Summary"
+                      >
+                        <History className="w-3 h-3" />
+                        <span className="text-xs font-medium">Summary</span>
+                      </button>
+                      {debugSummary?.has_debug_data && (
+                        <button
+                          onClick={clearDebugData}
+                          className="flex items-center gap-1 px-2 py-1 bg-red-100 text-red-800 rounded hover:bg-red-200 transition-colors"
+                          title="Clear Debug Data"
+                        >
+                          <Archive className="w-3 h-3" />
+                          <span className="text-xs font-medium">Clear</span>
+                        </button>
+                      )}
+                    </>
+                  )}
+                </div>
               </div>
             </div>
 
@@ -370,14 +720,35 @@ export default function AIAssistantApp({ onAdminAccess, onPowerUserAccess }: AIA
             <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
               {debugMode && (
                 <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3 mb-4">
-                  <div className="flex items-center gap-2">
-                    <Bug className="w-4 h-4 text-yellow-600" />
-                    <span className="text-sm font-medium text-yellow-800">Debug Mode Active</span>
-                  </div>
-                  <p className="text-xs text-yellow-700 mt-1">
-                    Messages will include detailed processing steps, tool calls, and LLM requests.
-                  </p>
+                <div className="flex items-center gap-2">
+                <Bug className="w-4 h-4 text-yellow-600" />
+                <span className="text-sm font-medium text-yellow-800">Debug Mode Active</span>
+                {isLoadingDebugData && (
+                <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-yellow-600"></div>
+                )}
                 </div>
+                <p className="text-xs text-yellow-700 mt-1">
+                Messages will include detailed processing steps, tool calls, and LLM requests. 
+                Debug data is automatically saved and persists between sessions.
+                </p>
+                <div className="mt-2 flex items-center gap-2 text-xs text-yellow-700">
+                <span>Quick access:</span>
+                <kbd className="px-1 py-0.5 bg-yellow-200 rounded text-yellow-800 font-mono">Ctrl+D</kbd>
+                <span>Steps</span>
+                <kbd className="px-1 py-0.5 bg-yellow-200 rounded text-yellow-800 font-mono">Ctrl+L</kbd>
+                <span>LLM</span>
+                <kbd className="px-1 py-0.5 bg-yellow-200 rounded text-yellow-800 font-mono">Ctrl+Shift+D</kbd>
+                  <span>Overview</span>
+                  </div>
+                {debugSummary?.has_debug_data && (
+                  <div className="mt-2 flex items-center gap-4 text-xs text-yellow-700">
+                    <span>Sessions: {debugSummary.total_sessions}</span>
+                    <span>Steps: {debugSummary.total_steps}</span>
+                    <span>Tools: {debugSummary.total_tools_used}</span>
+                    <span>Time: {debugSummary.total_processing_time.toFixed(2)}s</span>
+                  </div>
+                )}
+              </div>
               )}
               {messages.map(message => (
                 <MessageBubble 
@@ -443,9 +814,19 @@ export default function AIAssistantApp({ onAdminAccess, onPowerUserAccess }: AIA
         />
       )}
 
+      {/* Enhanced Debug Panel */}
+      {showEnhancedDebugPanel && activeConversation && currentUser && (
+        <EnhancedDebugPanel
+          conversationId={activeConversation.id}
+          userId={currentUser.id}
+          initialTab={enhancedDebugPanelTab}
+          onClose={() => setShowEnhancedDebugPanel(false)}
+        />
+      )}
+
       {/* Debug Summary */}
       {showDebugSummary && activeConversation && currentUser && (
-        <DebugSummary
+        <DebugSummaryComponent
           conversationId={activeConversation.id}
           userId={currentUser.id}
           onClose={() => setShowDebugSummary(false)}

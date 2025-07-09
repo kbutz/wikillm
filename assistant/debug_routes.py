@@ -1,5 +1,5 @@
 """
-Debug routes for tool usage tracing, system monitoring, and debug script execution
+Enhanced Debug routes with persistence capabilities
 """
 import logging
 import time
@@ -7,7 +7,6 @@ import os
 import sys
 import asyncio
 import subprocess
-import importlib.util
 from typing import List, Dict, Any, Optional
 from fastapi import HTTPException, Depends, BackgroundTasks, status, APIRouter, Response
 from sqlalchemy.orm import Session
@@ -17,12 +16,15 @@ from pydantic import BaseModel
 
 from database import get_db
 from models import User, Conversation, Message
+from schemas import Message as MessageSchema
 from enhanced_schemas import (
     ToolUsageTrace, ToolUsageAnalytics, SystemDebugInfo,
     ChatRequestWithDebug, ChatResponseWithDebug
 )
 from tool_usage_manager import ToolUsageManager
 from enhanced_conversation_manager import EnhancedConversationManager
+from debug_persistence_manager import DebugPersistenceManager
+from debug_data_processor import DebugDataProcessor
 from memory_manager import MemoryManager, EnhancedMemoryManager
 from lmstudio_client import lmstudio_client
 from config import settings
@@ -52,6 +54,16 @@ class DebugScriptResult(BaseModel):
     error: Optional[str] = None
     execution_time: float
 
+class DebugPreferenceUpdate(BaseModel):
+    """Update debug mode preference"""
+    enabled: bool
+
+class DebugDataResponse(BaseModel):
+    """Debug data response"""
+    conversation_id: int
+    has_debug_data: bool
+    debug_data: Dict[str, Any]
+
 def get_tool_usage_manager(db: Session = Depends(get_db)) -> ToolUsageManager:
     """Get tool usage manager instance"""
     global tool_usage_manager
@@ -65,7 +77,10 @@ def get_enhanced_conversation_manager(db: Session = Depends(get_db)) -> Enhanced
 def get_enhanced_memory_manager(db: Session = Depends(get_db)) -> EnhancedMemoryManager:
     return EnhancedMemoryManager(db)
 
-# Enhanced chat endpoint with comprehensive tool usage tracing
+def get_debug_persistence_manager(db: Session = Depends(get_db)) -> DebugPersistenceManager:
+    return DebugPersistenceManager(db)
+
+# Enhanced chat endpoint with comprehensive tool usage tracing and persistence
 @debug_router.post("/chat", response_model=ChatResponseWithDebug)
 async def chat_with_debug_tracing(
     request: ChatRequestWithDebug,
@@ -73,13 +88,18 @@ async def chat_with_debug_tracing(
     db: Session = Depends(get_db),
     conv_manager: EnhancedConversationManager = Depends(get_enhanced_conversation_manager),
     enhanced_memory: EnhancedMemoryManager = Depends(get_enhanced_memory_manager),
-    tool_manager: ToolUsageManager = Depends(get_tool_usage_manager)
+    tool_manager: ToolUsageManager = Depends(get_tool_usage_manager),
+    debug_persistence: DebugPersistenceManager = Depends(get_debug_persistence_manager)
 ):
-    """Enhanced chat endpoint with comprehensive tool usage tracing"""
+    """Enhanced chat endpoint with comprehensive tool usage tracing and persistence"""
     start_time = time.time()
     trace_id = None
+    debug_session = None
 
     try:
+        # Initialize debug data processor
+        debug_processor = DebugDataProcessor(db)
+        
         # Verify user exists
         user = db.query(User).filter(User.id == request.user_id).first()
         if not user:
@@ -99,8 +119,13 @@ async def chat_with_debug_tracing(
         else:
             conversation = conv_manager.create_conversation(request.user_id)
 
-        # Initialize tool usage tracing
+        # Initialize debug session if debug tracing is enabled
         if request.enable_tool_trace:
+            debug_session = debug_persistence.get_or_create_debug_session(
+                conversation.id, request.user_id
+            )
+
+            # Initialize tool usage tracing
             trace_id = tool_manager.create_trace(
                 conversation_id=conversation.id,
                 user_id=request.user_id
@@ -112,6 +137,11 @@ async def chat_with_debug_tracing(
             "user",
             request.message
         )
+
+        # Mark message as debug-enabled if tracing is on
+        if request.enable_tool_trace:
+            user_message.debug_enabled = True
+            db.commit()
 
         # Update trace with message ID
         if trace_id:
@@ -133,6 +163,20 @@ async def chat_with_debug_tracing(
                     max_messages=settings.max_conversation_history,
                     include_historical_context=True
                 )
+
+                # Store debug step
+                if debug_session:
+                    debug_persistence.store_debug_step(
+                        message_id=user_message.id,
+                        debug_session_id=debug_session.id,
+                        step_type="context_building",
+                        step_order=1,
+                        title="Context Building",
+                        description="Building conversation context with enhanced features",
+                        success=True,
+                        input_data={"max_messages": settings.max_conversation_history},
+                        output_data={"context_size": len(context)}
+                    )
         else:
             context = await conv_manager.build_tool_enhanced_context(
                 conversation.id,
@@ -151,10 +195,25 @@ async def chat_with_debug_tracing(
                 description="Discovering available MCP tools"
             ):
                 available_tools = get_mcp_tools_for_assistant()
+
+                # Store debug step
+                if debug_session:
+                    debug_persistence.store_debug_step(
+                        message_id=user_message.id,
+                        debug_session_id=debug_session.id,
+                        step_type="tool_discovery",
+                        step_order=2,
+                        title="Tool Discovery",
+                        description="Discovering available MCP tools",
+                        success=True,
+                        output_data={"tools_discovered": len(available_tools)}
+                    )
         else:
             available_tools = get_mcp_tools_for_assistant()
 
         # Step 3: LLM Request with tracing
+        debug_context = {}  # Always create debug context
+        
         if trace_id:
             async with tool_manager.trace_step(
                 trace_id,
@@ -173,7 +232,8 @@ async def chat_with_debug_tracing(
                     "messages": context,
                     "temperature": request.temperature,
                     "max_tokens": request.max_tokens,
-                    "stream": False
+                    "stream": False,
+                    "debug_context": debug_context
                 }
 
                 # Add tools if available
@@ -188,13 +248,56 @@ async def chat_with_debug_tracing(
 
                 # Get LLM response
                 llm_response = await lmstudio_client.chat_completion(**llm_request_params)
+
+                # Store LLM request/response with debug data
+                if debug_session:
+                    debug_persistence.store_llm_request(
+                        message_id=user_message.id,
+                        model=settings.lmstudio_model,
+                        request_messages=context,
+                        response_data=llm_response,
+                        temperature=request.temperature,
+                        max_tokens=request.max_tokens,
+                        stream=False,
+                        processing_time_ms=debug_context.get('llm_processing_time_ms', int((time.time() - start_time) * 1000)),
+                        token_usage=llm_response.get("usage"),
+                        tools_available=available_tools
+                    )
+
+                    # Store debug step with full request payload
+                    debug_persistence.store_debug_step(
+                        message_id=user_message.id,
+                        debug_session_id=debug_session.id,
+                        step_type="llm_request",
+                        step_order=3,
+                        title="LLM Request",
+                        description="Making LLM inference call",
+                        success=True,
+                        input_data={
+                            "model": settings.lmstudio_model,
+                            "context_size": len(context),
+                            "tools_available": len(available_tools),
+                            "full_request_payload": debug_context.get('llm_request_payload', {}),
+                            "temperature": request.temperature,
+                            "max_tokens": request.max_tokens,
+                            "messages": context
+                        },
+                        output_data={
+                            "token_usage": llm_response.get("usage"),
+                            "has_tool_calls": bool(llm_response.get("choices", [{}])[0].get("message", {}).get("tool_calls")),
+                            "processing_time_ms": debug_context.get('llm_processing_time_ms'),
+                            "full_response": debug_context.get('llm_response_raw', {}),
+                            "response_tokens": debug_context.get('llm_response_tokens', 0)
+                        }
+                    )
         else:
-            # Standard processing without tracing
+            # Standard processing without tracing - still capture debug data
             llm_request_params = {
                 "messages": context,
                 "temperature": request.temperature,
                 "max_tokens": request.max_tokens,
-                "stream": False
+                "stream": False,
+                "debug_context": debug_context
             }
 
             if available_tools:
@@ -207,6 +310,21 @@ async def chat_with_debug_tracing(
                 llm_request_params["tool_choice"] = "auto"
 
             llm_response = await lmstudio_client.chat_completion(**llm_request_params)
+            
+            # Store LLM request/response even without tracing if debug is enabled
+            if debug_session:
+                debug_persistence.store_llm_request(
+                    message_id=user_message.id,
+                    model=settings.lmstudio_model,
+                    request_messages=context,
+                    response_data=llm_response,
+                    temperature=request.temperature,
+                    max_tokens=request.max_tokens,
+                    stream=False,
+                    processing_time_ms=debug_context.get('llm_processing_time_ms', 0),
+                    token_usage=llm_response.get("usage"),
+                    tools_available=available_tools
+                )
 
         # Step 4: Tool Processing with tracing
         if trace_id:
@@ -220,6 +338,23 @@ async def chat_with_debug_tracing(
                 processed_response = await conv_manager.process_llm_response_with_tools(
                     llm_response, conversation.id
                 )
+
+                # Store debug step
+                if debug_session:
+                    debug_persistence.store_debug_step(
+                        message_id=user_message.id,
+                        debug_session_id=debug_session.id,
+                        step_type="tool_processing",
+                        step_order=4,
+                        title="Tool Processing",
+                        description="Processing tool calls from LLM response",
+                        success=True,
+                        input_data={"has_tool_calls": bool(llm_response.get("choices", [{}])[0].get("message", {}).get("tool_calls"))},
+                        output_data={
+                            "requires_followup": processed_response.get("requires_followup", False),
+                            "tool_results_count": len(processed_response.get("tool_results", []))
+                        }
+                    )
         else:
             processed_response = await conv_manager.process_llm_response_with_tools(
                 llm_response, conversation.id
@@ -248,8 +383,23 @@ async def chat_with_debug_tracing(
                         messages=followup_context,
                         temperature=request.temperature,
                         max_tokens=request.max_tokens,
-                        stream=False
+                        stream=False,
+                        debug_context=debug_context
                     )
+
+                    # Store followup debug step
+                    if debug_session:
+                        debug_persistence.store_debug_step(
+                            message_id=user_message.id,
+                            debug_session_id=debug_session.id,
+                            step_type="followup_processing",
+                            step_order=5,
+                            title="Follow-up Processing",
+                            description="Processing follow-up LLM call with tool results",
+                            success=True,
+                            input_data={"tool_results_count": len(tool_results)},
+                            output_data={"final_response_token_usage": final_response.get("usage")}
+                        )
 
         # Extract response content
         final_message = final_response["choices"][0]["message"]
@@ -275,6 +425,11 @@ async def chat_with_debug_tracing(
             }
         )
 
+        # Mark assistant message as debug-enabled if tracing is on
+        if request.enable_tool_trace:
+            assistant_message.debug_enabled = True
+            db.commit()
+
         # Finalize trace
         trace = None
         if trace_id:
@@ -291,13 +446,39 @@ async def chat_with_debug_tracing(
                 enhanced_memory
             )
 
+        # Process debug data using the debug data processor
+        if request.enable_tool_trace and debug_session:
+            # Wait a moment for the database to be updated
+            import asyncio
+            await asyncio.sleep(0.1)
+            
+            # Ensure debug data completeness for this message
+            debug_processor.ensure_debug_data_completeness(assistant_message.id)
+            
+            # Process and attach debug data to the message
+            message_schema = debug_processor.process_debug_data_for_message(assistant_message)
+            
+            logger.info(f"Processed debug data for message {assistant_message.id} using DebugDataProcessor")
+        else:
+            # Convert SQLAlchemy Message model to Pydantic Message model for serialization
+            message_schema = MessageSchema.model_validate(assistant_message)
+            
+            # Set debug_enabled flag when debug is requested
+            if request.enable_tool_trace:
+                message_schema.debug_enabled = True
+
         return ChatResponseWithDebug(
-            message=assistant_message,
+            message=message_schema,
             conversation_id=conversation.id,
             processing_time=processing_time,
             token_count=final_response.get("usage", {}).get("total_tokens"),
             tool_trace=trace,
-            debug_enabled=request.enable_tool_trace
+            debug_enabled=request.enable_tool_trace,
+            # Debug response fields based on processed message
+            total_steps=len(message_schema.intermediary_steps or []),
+            successful_steps=len([s for s in (message_schema.intermediary_steps or []) if s.get("success", True)]),
+            failed_steps=len([s for s in (message_schema.intermediary_steps or []) if not s.get("success", True)]),
+            tools_used=processed_response.get("tool_results", [])
         )
 
     except TimeoutException as e:
@@ -317,8 +498,141 @@ async def chat_with_debug_tracing(
             detail=f"Chat processing failed: {str(e)}"
         )
 
+# Debug data persistence endpoints
+@debug_router.get("/conversations/{conversation_id}/data", response_model=DebugDataResponse)
+async def get_conversation_debug_data(
+    conversation_id: int,
+    user_id: int,
+    db: Session = Depends(get_db),
+    debug_persistence: DebugPersistenceManager = Depends(get_debug_persistence_manager)
+):
+    """Get persistent debug data for a conversation"""
+    try:
+        debug_data = debug_persistence.get_conversation_debug_data(conversation_id, user_id)
 
-# Tool usage analytics endpoints
+        return DebugDataResponse(
+            conversation_id=conversation_id,
+            has_debug_data=len(debug_data["messages"]) > 0,
+            debug_data=debug_data
+        )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Failed to get debug data: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get debug data: {str(e)}"
+        )
+
+@debug_router.get("/conversations/{conversation_id}/summary")
+async def get_conversation_debug_summary(
+    conversation_id: int,
+    user_id: int,
+    db: Session = Depends(get_db),
+    debug_persistence: DebugPersistenceManager = Depends(get_debug_persistence_manager)
+):
+    """Get debug summary for a conversation"""
+    try:
+        summary = debug_persistence.get_debug_session_summary(conversation_id, user_id)
+        return {"success": True, "data": summary}
+    except Exception as e:
+        logger.error(f"Failed to get debug summary: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get debug summary: {str(e)}"
+        )
+
+@debug_router.get("/users/{user_id}/preference")
+async def get_user_debug_preference(
+    user_id: int,
+    db: Session = Depends(get_db),
+    debug_persistence: DebugPersistenceManager = Depends(get_debug_persistence_manager)
+):
+    """Get user's debug mode preference"""
+    try:
+        enabled = debug_persistence.get_user_debug_preference(user_id)
+        return {"success": True, "data": {"enabled": enabled}}
+    except Exception as e:
+        logger.error(f"Failed to get debug preference: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get debug preference: {str(e)}"
+        )
+
+@debug_router.post("/users/{user_id}/preference")
+async def set_user_debug_preference(
+    user_id: int,
+    preference: DebugPreferenceUpdate,
+    db: Session = Depends(get_db),
+    debug_persistence: DebugPersistenceManager = Depends(get_debug_persistence_manager)
+):
+    """Set user's debug mode preference"""
+    try:
+        # Verify user exists
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="User not found"
+            )
+
+        debug_persistence.set_user_debug_preference(user_id, preference.enabled)
+        return {"success": True, "message": "Debug preference updated"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to set debug preference: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to set debug preference: {str(e)}"
+        )
+
+@debug_router.post("/sessions/{session_id}/end")
+async def end_debug_session(
+    session_id: str,
+    db: Session = Depends(get_db),
+    debug_persistence: DebugPersistenceManager = Depends(get_debug_persistence_manager)
+):
+    """End a debug session"""
+    try:
+        success = debug_persistence.end_debug_session(session_id)
+        if success:
+            return {"success": True, "message": "Debug session ended"}
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Debug session not found"
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to end debug session: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to end debug session: {str(e)}"
+        )
+
+@debug_router.post("/cleanup")
+async def cleanup_old_debug_data(
+    days_old: int = 30,
+    db: Session = Depends(get_db),
+    debug_persistence: DebugPersistenceManager = Depends(get_debug_persistence_manager)
+):
+    """Clean up old debug data"""
+    try:
+        count = debug_persistence.cleanup_old_debug_data(days_old)
+        return {"success": True, "message": f"Cleaned up {count} old debug records"}
+    except Exception as e:
+        logger.error(f"Failed to cleanup debug data: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to cleanup debug data: {str(e)}"
+        )
+
+# Existing endpoints (keep all existing functionality)
 @debug_router.get("/conversations/{conversation_id}/tool-usage", response_model=ToolUsageAnalytics)
 async def get_tool_usage_analytics(
     conversation_id: int,
@@ -349,7 +663,6 @@ async def get_tool_usage_analytics(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to get analytics: {str(e)}"
         )
-
 
 @debug_router.get("/conversations/{conversation_id}/tool-traces", response_model=List[ToolUsageTrace])
 async def get_conversation_tool_traces(
@@ -383,7 +696,6 @@ async def get_conversation_tool_traces(
             detail=f"Failed to get traces: {str(e)}"
         )
 
-
 @debug_router.get("/users/{user_id}/tool-traces", response_model=List[ToolUsageTrace])
 async def get_user_tool_traces(
     user_id: int,
@@ -410,7 +722,6 @@ async def get_user_tool_traces(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to get traces: {str(e)}"
         )
-
 
 @debug_router.get("/system-info", response_model=SystemDebugInfo)
 async def get_system_debug_info(
@@ -484,27 +795,7 @@ async def get_system_debug_info(
             detail=f"Failed to get debug info: {str(e)}"
         )
 
-
-# Background task functions
-async def extract_and_store_enhanced_memories(
-    user_id: int,
-    user_message: str,
-    assistant_response: str,
-    conversation_id: int,
-    enhanced_memory: EnhancedMemoryManager
-):
-    """Enhanced background task to extract and store facts and memories"""
-    try:
-        memories = await enhanced_memory.extract_and_store_facts(
-            user_id, user_message, assistant_response, conversation_id
-        )
-        if memories:
-            logger.info(f"Stored {len(memories)} enhanced memories for user {user_id}")
-    except Exception as e:
-        logger.error(f"Failed to extract enhanced memories: {e}")
-
-
-# Debug script endpoints
+# Debug script endpoints (keep existing functionality)
 def get_debug_scripts() -> List[DebugScript]:
     """Get list of available debug scripts"""
     scripts = []
@@ -532,7 +823,6 @@ def get_debug_scripts() -> List[DebugScript]:
             "description": "Debug MCP functionality",
             "type": "debug"
         },
-
         "test_mcp.py": {
             "description": "Test MCP functionality",
             "type": "test"
@@ -568,7 +858,6 @@ def get_debug_scripts() -> List[DebugScript]:
 
     return scripts
 
-
 @debug_router.get("/scripts", response_model=List[DebugScript])
 async def list_debug_scripts():
     """List all available debug scripts"""
@@ -581,7 +870,6 @@ async def list_debug_scripts():
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to list debug scripts: {str(e)}"
         )
-
 
 @debug_router.post("/scripts/{script_name}/run", response_model=DebugScriptResult)
 async def run_debug_script(script_name: str):
@@ -624,7 +912,6 @@ async def run_debug_script(script_name: str):
             execution_time=execution_time
         )
 
-
 async def execute_script(script_path: str) -> Dict[str, Any]:
     """Execute a Python script and return the result"""
     try:
@@ -664,3 +951,56 @@ async def execute_script(script_path: str) -> Dict[str, Any]:
             "output": "",
             "error": str(e)
         }
+
+# Debug data migration endpoint
+@debug_router.post("/migrate-debug-data")
+async def migrate_debug_data(
+    conversation_id: Optional[int] = None,
+    user_id: Optional[int] = None,
+    db: Session = Depends(get_db),
+    debug_persistence: DebugPersistenceManager = Depends(get_debug_persistence_manager)
+):
+    """Migrate existing debug data to ensure proper flagging"""
+    try:
+        debug_processor = DebugDataProcessor(db)
+        
+        if conversation_id:
+            # Migrate specific conversation
+            processed_count = debug_processor.batch_process_debug_data(conversation_id)
+            return {
+                "success": True,
+                "message": f"Migrated debug data for {processed_count} messages in conversation {conversation_id}"
+            }
+        else:
+            # Migrate all debug-enabled messages
+            from debug_data_processor import migrate_existing_debug_data
+            fixed_count = migrate_existing_debug_data(db)
+            return {
+                "success": True,
+                "message": f"Migrated debug data for {fixed_count} messages across all conversations"
+            }
+    except Exception as e:
+        logger.error(f"Failed to migrate debug data: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to migrate debug data: {str(e)}"
+        )
+
+
+# Background task functions
+async def extract_and_store_enhanced_memories(
+    user_id: int,
+    user_message: str,
+    assistant_response: str,
+    conversation_id: int,
+    enhanced_memory: EnhancedMemoryManager
+):
+    """Enhanced background task to extract and store facts and memories"""
+    try:
+        memories = await enhanced_memory.extract_and_store_facts(
+            user_id, user_message, assistant_response, conversation_id
+        )
+        if memories:
+            logger.info(f"Stored {len(memories)} enhanced memories for user {user_id}")
+    except Exception as e:
+        logger.error(f"Failed to extract enhanced memories: {e}")

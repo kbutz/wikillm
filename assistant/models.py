@@ -1,5 +1,5 @@
 """
-Database Models for AI Assistant
+Enhanced Database Models with Debug Data Persistence
 """
 from sqlalchemy import Column, Integer, String, DateTime, Text, Float, Boolean, ForeignKey, JSON
 from sqlalchemy.ext.declarative import declarative_base
@@ -44,6 +44,7 @@ class Conversation(Base):
     user = relationship("User", back_populates="conversations")
     messages = relationship("Message", back_populates="conversation", cascade="all, delete-orphan")
     summary = relationship("ConversationSummary", back_populates="conversation", uselist=False)
+    debug_sessions = relationship("DebugSession", back_populates="conversation", cascade="all, delete-orphan")
 
 
 class Message(Base):
@@ -62,8 +63,104 @@ class Message(Base):
     temperature = Column(Float, nullable=True)
     processing_time = Column(Float, nullable=True)  # seconds
 
+    # Debug information
+    debug_enabled = Column(Boolean, default=False)
+    debug_data = Column(JSON, nullable=True)  # Store debug information
+
     # Relationships
     conversation = relationship("Conversation", back_populates="messages")
+    debug_steps = relationship("DebugStep", back_populates="message", cascade="all, delete-orphan")
+    llm_requests = relationship("LLMRequest", back_populates="message", cascade="all, delete-orphan")
+
+
+class DebugSession(Base):
+    """Debug session tracking for conversations"""
+    __tablename__ = "debug_sessions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    conversation_id = Column(Integer, ForeignKey("conversations.id"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    session_id = Column(String(100), nullable=False, index=True)  # Unique session identifier
+    started_at = Column(DateTime, default=func.now())
+    ended_at = Column(DateTime, nullable=True)
+    is_active = Column(Boolean, default=True)
+
+    # Session metadata
+    total_messages = Column(Integer, default=0)
+    total_steps = Column(Integer, default=0)
+    total_tools_used = Column(Integer, default=0)
+    total_processing_time = Column(Float, default=0.0)
+
+    # Relationships
+    conversation = relationship("Conversation", back_populates="debug_sessions")
+    user = relationship("User")
+    debug_steps = relationship("DebugStep", back_populates="debug_session", cascade="all, delete-orphan")
+
+
+class DebugStep(Base):
+    """Individual debug steps within a message processing"""
+    __tablename__ = "debug_steps"
+
+    id = Column(Integer, primary_key=True, index=True)
+    message_id = Column(Integer, ForeignKey("messages.id"), nullable=False)
+    debug_session_id = Column(Integer, ForeignKey("debug_sessions.id"), nullable=False)
+    step_id = Column(String(100), nullable=False, index=True)  # Unique step identifier
+
+    # Step information
+    step_type = Column(String(50), nullable=False)  # 'tool_call', 'tool_result', 'memory_retrieval', etc.
+    step_order = Column(Integer, nullable=False)  # Order within the message processing
+    title = Column(String(200), nullable=False)
+    description = Column(Text, nullable=True)
+
+    # Timing
+    timestamp = Column(DateTime, default=func.now())
+    duration_ms = Column(Integer, nullable=True)
+
+    # Status
+    success = Column(Boolean, default=True)
+    error_message = Column(Text, nullable=True)
+
+    # Data
+    input_data = Column(JSON, nullable=True)
+    output_data = Column(JSON, nullable=True)
+    step_metadata = Column(JSON, nullable=True)
+
+    # Relationships
+    message = relationship("Message", back_populates="debug_steps")
+    debug_session = relationship("DebugSession", back_populates="debug_steps")
+
+
+class LLMRequest(Base):
+    """LLM request/response tracking for debug purposes"""
+    __tablename__ = "llm_requests"
+
+    id = Column(Integer, primary_key=True, index=True)
+    message_id = Column(Integer, ForeignKey("messages.id"), nullable=False)
+    request_id = Column(String(100), nullable=False, index=True)  # Unique request identifier
+
+    # Request information
+    model = Column(String(100), nullable=False)
+    temperature = Column(Float, nullable=True)
+    max_tokens = Column(Integer, nullable=True)
+    stream = Column(Boolean, default=False)
+
+    # Request/Response data
+    request_messages = Column(JSON, nullable=False)  # Full request context
+    response_data = Column(JSON, nullable=False)  # Full response
+
+    # Timing and usage
+    timestamp = Column(DateTime, default=func.now())
+    processing_time_ms = Column(Integer, nullable=True)
+    token_usage = Column(JSON, nullable=True)
+
+    # Tools information
+    tools_available = Column(JSON, nullable=True)
+    tools_used = Column(JSON, nullable=True)
+    tool_calls = Column(JSON, nullable=True)
+    tool_results = Column(JSON, nullable=True)
+
+    # Relationships
+    message = relationship("Message", back_populates="llm_requests")
 
 
 class UserMemory(Base):
@@ -92,7 +189,7 @@ class UserPreference(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
-    category = Column(String(50), nullable=False)  # 'response_style', 'model_settings', etc.
+    category = Column(String(50), nullable=False)  # 'response_style', 'model_settings', 'debug_mode', etc.
     key = Column(String(100), nullable=False)
     value = Column(JSON, nullable=False)
     created_at = Column(DateTime, default=func.now())

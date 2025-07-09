@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Clock, ChevronDown, ChevronRight, Zap, Code, AlertCircle, CheckCircle, XCircle, Settings } from 'lucide-react';
+import { Clock, ChevronDown, ChevronRight, Zap, Code, AlertCircle, CheckCircle, XCircle, Settings, Database, MessageSquare } from 'lucide-react';
 import { Message, IntermediaryStep, ToolCall, ToolResult, LLMRequest, LLMResponse } from '../types';
 
 interface MessageBubbleProps {
@@ -13,22 +13,35 @@ interface CollapsibleSectionProps {
   defaultOpen?: boolean;
   icon?: React.ReactNode;
   badge?: string;
+  prominent?: boolean;
 }
 
-function CollapsibleSection({ title, children, defaultOpen = false, icon, badge }: CollapsibleSectionProps) {
+function CollapsibleSection({ title, children, defaultOpen = false, icon, badge, prominent = false }: CollapsibleSectionProps) {
   const [isOpen, setIsOpen] = useState(defaultOpen);
 
   return (
-    <div className="border border-gray-200 rounded-lg mt-2 overflow-hidden">
+    <div className={`border rounded-lg mt-2 overflow-hidden ${
+      prominent ? 'border-blue-300 bg-blue-50' : 'border-gray-200'
+    }`}>
       <button
         onClick={() => setIsOpen(!isOpen)}
-        className="w-full flex items-center justify-between p-3 bg-gray-50 hover:bg-gray-100 transition-colors text-left"
+        className={`w-full flex items-center justify-between p-3 hover:bg-gray-100 transition-colors text-left ${
+          prominent ? 'bg-blue-100' : 'bg-gray-50'
+        }`}
       >
         <div className="flex items-center gap-2">
           {icon}
-          <span className="text-sm font-medium text-gray-700">{title}</span>
+          <span className={`text-sm font-medium ${
+            prominent ? 'text-blue-900' : 'text-gray-700'
+          }`}>
+            {title}
+          </span>
           {badge && (
-            <span className="px-2 py-1 text-xs bg-blue-100 text-blue-800 rounded-full">
+            <span className={`px-2 py-1 text-xs rounded-full ${
+              prominent 
+                ? 'bg-blue-200 text-blue-900' 
+                : 'bg-blue-100 text-blue-800'
+            }`}>
               {badge}
             </span>
           )}
@@ -276,13 +289,142 @@ function LLMResponseComponent({ llmResponse }: { llmResponse: LLMResponse }) {
   );
 }
 
+// NEW: Enhanced Raw LLM Request Display Component
+function RawLLMRequestComponent({ llmRequest }: { llmRequest: LLMRequest }) {
+  // Format JSON with proper line breaks for better readability
+  const formatJsonWithLineBreaks = (obj: any): string => {
+    // First, stringify the object with indentation
+    const jsonString = JSON.stringify(obj, null, 2);
+
+    // Replace escaped newlines with actual newlines in content fields
+    return jsonString.replace(/(\\n)/g, '\n');
+  };
+
+  // Create the full request object as it would be sent to LMStudio
+  const fullRequest = {
+    model: llmRequest.model,
+    messages: llmRequest.messages,
+    temperature: llmRequest.temperature,
+    max_tokens: llmRequest.max_tokens,
+    stream: llmRequest.stream,
+    ...(llmRequest.tools && llmRequest.tools.length > 0 && {
+      tools: llmRequest.tools,
+      tool_choice: llmRequest.tool_choice || "auto"
+    })
+  };
+
+  return (
+    <div className="bg-gray-900 text-green-400 p-4 rounded-lg font-mono text-xs overflow-x-auto mb-4">
+      <div className="flex items-center justify-between mb-2">
+        <div className="flex items-center gap-2">
+          <Database className="w-4 h-4 text-green-400" />
+          <span className="text-green-300 font-semibold">LLM Request (Full JSON)</span>
+        </div>
+        <div className="text-green-500 text-xs">
+          {llmRequest.model} • {llmRequest.messages.length} messages • {llmRequest.tools?.length || 0} tools
+        </div>
+      </div>
+      <div className="text-green-600 text-xs mb-2">
+        This is the exact JSON request sent to LMStudio:
+      </div>
+      <pre className="whitespace-pre-wrap text-green-400 leading-relaxed">
+        {formatJsonWithLineBreaks(fullRequest)}
+      </pre>
+    </div>
+  );
+}
+
+// NEW: Enhanced Raw LLM Response Display Component
+function RawLLMResponseComponent({ llmResponse }: { llmResponse: LLMResponse }) {
+  // Format JSON with proper line breaks for better readability
+  const formatJsonWithLineBreaks = (obj: any): string => {
+    // First, stringify the object with indentation
+    const jsonString = JSON.stringify(obj, null, 2);
+
+    // Replace escaped newlines with actual newlines in content fields
+    return jsonString.replace(/(\\n)/g, '\n');
+  };
+
+  return (
+    <div className="bg-gray-900 text-blue-400 p-4 rounded-lg font-mono text-xs overflow-x-auto mb-4">
+      <div className="flex items-center justify-between mb-2">
+        <div className="flex items-center gap-2">
+          <MessageSquare className="w-4 h-4 text-blue-400" />
+          <span className="text-blue-300 font-semibold">LLM Response (Full JSON)</span>
+        </div>
+        <div className="text-blue-500 text-xs">
+          {llmResponse.processing_time_ms}ms • {llmResponse.token_usage?.total_tokens ?? 'N/A'} tokens
+        </div>
+      </div>
+      <div className="text-blue-600 text-xs mb-2">
+        This is the exact JSON response received from LMStudio:
+      </div>
+      <pre className="whitespace-pre-wrap text-blue-400 leading-relaxed">
+        {formatJsonWithLineBreaks(llmResponse.response)}
+      </pre>
+    </div>
+  );
+}
+
 export default function MessageBubble({ message, showDebugInfo = false }: MessageBubbleProps) {
   const isUser = message.role === 'user';
   const hasDebugInfo = message.intermediary_steps?.length || message.llm_request || message.tool_calls?.length;
 
+  // Debug: Log what debug data is available
+  if (showDebugInfo && !isUser) {
+    console.log('=== MESSAGE BUBBLE DEBUG ===');
+    console.log('Message ID:', message.id);
+    console.log('Message role:', message.role);
+    console.log('Message content length:', message.content.length);
+    console.log('Debug enabled:', message.debug_enabled);
+    console.log('Debug data:', message.debug_data);
+    
+    // Check each debug field
+    console.log('Intermediary steps:', {
+      exists: !!message.intermediary_steps,
+      length: message.intermediary_steps?.length || 0,
+      data: message.intermediary_steps
+    });
+    
+    console.log('LLM request:', {
+      exists: !!message.llm_request,
+      model: message.llm_request?.model,
+      messages_count: message.llm_request?.messages?.length || 0,
+      tools_count: message.llm_request?.tools?.length || 0,
+      data: message.llm_request
+    });
+    
+    console.log('LLM response:', {
+      exists: !!message.llm_response,
+      processing_time: message.llm_response?.processing_time_ms,
+      tokens: message.llm_response?.token_usage?.total_tokens,
+      data: message.llm_response
+    });
+    
+    console.log('Tool calls:', {
+      exists: !!message.tool_calls,
+      length: message.tool_calls?.length || 0,
+      data: message.tool_calls
+    });
+    
+    console.log('Tool results:', {
+      exists: !!message.tool_results,
+      length: message.tool_results?.length || 0,
+      data: message.tool_results
+    });
+    
+    console.log('hasDebugInfo calculated:', hasDebugInfo);
+    console.log('showDebugInfo prop:', showDebugInfo);
+    console.log('=== END MESSAGE BUBBLE DEBUG ===');
+  }
+
   return (
     <div className={`flex ${isUser ? 'justify-end' : 'justify-start'} animate-fade-in`}>
-      <div className={`max-w-xs lg:max-w-md xl:max-w-lg px-4 py-2 rounded-lg ${
+      <div className={`${
+        hasDebugInfo && showDebugInfo
+          ? 'max-w-full lg:max-w-4xl xl:max-w-5xl'
+          : 'max-w-xs lg:max-w-md xl:max-w-lg'
+      } px-4 py-2 rounded-lg ${
         isUser
           ? 'bg-blue-600 text-white'
           : 'bg-white border border-gray-200 text-gray-900 shadow-sm'
@@ -307,14 +449,62 @@ export default function MessageBubble({ message, showDebugInfo = false }: Messag
         </div>
 
         {/* Debug Information */}
-        {!isUser && hasDebugInfo && showDebugInfo && (
+        {!isUser && showDebugInfo && (
           <div className="mt-3 space-y-2">
+            {/* Show diagnostic if debug mode is active but no debug data found */}
+            {!hasDebugInfo && (
+              <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3">
+                <div className="flex items-center gap-2">
+                  <AlertCircle className="w-4 h-4 text-yellow-600" />
+                  <span className="text-sm font-medium text-yellow-800">Debug Mode Active - No Debug Data Found</span>
+                </div>
+                <p className="text-xs text-yellow-700 mt-1">
+                  Debug mode is enabled but no debug data was found for this message. 
+                  This may indicate an issue with debug data processing or the message may not have generated debug data.
+                </p>
+                <details className="mt-2">
+                  <summary className="text-xs text-yellow-600 cursor-pointer">View message details</summary>
+                  <pre className="text-xs bg-yellow-100 p-2 mt-1 rounded overflow-x-auto whitespace-pre-wrap">
+                    {JSON.stringify({
+                      id: message.id,
+                      role: message.role,
+                      timestamp: message.timestamp,
+                      debug_enabled: message.debug_enabled,
+                      has_debug_data: !!message.debug_data,
+                      debug_fields: {
+                        intermediary_steps: !!message.intermediary_steps,
+                        llm_request: !!message.llm_request,
+                        llm_response: !!message.llm_response,
+                        tool_calls: !!message.tool_calls,
+                        tool_results: !!message.tool_results
+                      }
+                    }, null, 2)}
+                  </pre>
+                </details>
+              </div>
+            )}
+
+            {/* NEW: Raw LLM Request - Most Prominent Display */}
+            {message.llm_request && (
+              <div className="mb-3">
+                <RawLLMRequestComponent llmRequest={message.llm_request} />
+              </div>
+            )}
+
+            {/* NEW: Raw LLM Response - Most Prominent Display */}
+            {message.llm_response && (
+              <div className="mb-3">
+                <RawLLMResponseComponent llmResponse={message.llm_response} />
+              </div>
+            )}
+
             {/* Intermediary Steps */}
             {message.intermediary_steps && message.intermediary_steps.length > 0 && (
               <CollapsibleSection
                 title="Processing Steps"
                 icon={<Code className="w-4 h-4 text-purple-600" />}
                 badge={`${message.intermediary_steps.length} steps`}
+                defaultOpen={true}
               >
                 <div className="space-y-2">
                   {message.intermediary_steps.map((step, index) => (
@@ -330,6 +520,7 @@ export default function MessageBubble({ message, showDebugInfo = false }: Messag
                 title="Tool Calls"
                 icon={<Settings className="w-4 h-4 text-blue-600" />}
                 badge={`${message.tool_calls.length} calls`}
+                defaultOpen={true}
               >
                 <div className="space-y-2">
                   {message.tool_calls.map((toolCall, index) => (
@@ -345,6 +536,7 @@ export default function MessageBubble({ message, showDebugInfo = false }: Messag
                 title="Tool Results"
                 icon={<Zap className="w-4 h-4 text-green-600" />}
                 badge={`${message.tool_results.length} results`}
+                defaultOpen={true}
               >
                 <div className="space-y-2">
                   {message.tool_results.map((toolResult, index) => (
@@ -354,23 +546,25 @@ export default function MessageBubble({ message, showDebugInfo = false }: Messag
               </CollapsibleSection>
             )}
 
-            {/* LLM Request */}
+            {/* LLM Request - Secondary Display (Detailed) */}
             {message.llm_request && (
               <CollapsibleSection
-                title="LLM Request"
+                title="LLM Request Details"
                 icon={<Code className="w-4 h-4 text-purple-600" />}
                 badge={message.llm_request.model}
+                defaultOpen={false}
               >
                 <LLMRequestComponent llmRequest={message.llm_request} />
               </CollapsibleSection>
             )}
 
-            {/* LLM Response */}
+            {/* LLM Response - Secondary Display (Detailed) */}
             {message.llm_response && (
               <CollapsibleSection
-                title="LLM Response"
+                title="LLM Response Details"
                 icon={<Code className="w-4 h-4 text-purple-600" />}
                 badge={`${message.llm_response.processing_time_ms}ms`}
+                defaultOpen={false}
               >
                 <LLMResponseComponent llmResponse={message.llm_response} />
               </CollapsibleSection>
