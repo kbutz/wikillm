@@ -189,30 +189,30 @@ class ConversationManager:
                     structured_context = await search_manager.get_structured_historical_context(
                         user_id, current_message, limit=2
                     )
-                    
+
                     if structured_context:
                         historical_parts = []
-                        
+
                         # Format relevant solutions
                         if structured_context.get("relevant_solutions"):
                             historical_parts.append("Previous solutions:")
                             for solution in structured_context["relevant_solutions"][:2]:
                                 historical_parts.append(f"• {solution}")
-                        
+
                         # Format project continuations
                         if structured_context.get("project_continuations"):
                             historical_parts.append("Project continuations:")
                             for continuation in structured_context["project_continuations"][:2]:
                                 historical_parts.append(f"• {continuation}")
-                        
+
                         # Format similar topics
                         if structured_context.get("similar_topics"):
                             topics = ", ".join(structured_context["similar_topics"][:4])
                             historical_parts.append(f"Related topics: {topics}")
-                        
+
                         if historical_parts:
                             historical_context = f"\\n\\nFrom previous conversations:\\n{chr(10).join(historical_parts)}"
-                            
+
             except Exception as e:
                 logger.warning(f"Could not get structured historical context: {e}")
                 historical_context = ""
@@ -252,39 +252,39 @@ class ConversationManager:
         """Format consolidated user profile for conversation context"""
         if not user_profile:
             return ""
-        
+
         context_parts = []
-        
+
         # Personal information
         if user_profile.get("personal"):
             personal_items = [f"{k}: {v}" for k, v in user_profile["personal"].items()]
             if personal_items:
                 context_parts.append("Personal: " + "; ".join(personal_items[:3]))
-        
+
         # Preferences
         if user_profile.get("preferences"):
             pref_items = [f"{k}: {v}" for k, v in user_profile["preferences"].items()]
             if pref_items:
                 context_parts.append("Preferences: " + "; ".join(pref_items[:3]))
-        
+
         # Skills
         if user_profile.get("skills"):
             skill_items = [f"{k}: {v}" for k, v in user_profile["skills"].items()]
             if skill_items:
                 context_parts.append("Skills: " + "; ".join(skill_items[:3]))
-        
+
         # Current projects
         if user_profile.get("projects"):
             project_items = [f"{k}: {v}" for k, v in user_profile["projects"].items()]
             if project_items:
                 context_parts.append("Projects: " + "; ".join(project_items[:2]))
-        
+
         # Context
         if user_profile.get("context"):
             context_items = [f"{k}: {v}" for k, v in user_profile["context"].items()]
             if context_items:
                 context_parts.append("Context: " + "; ".join(context_items[:2]))
-        
+
         return "\\n".join(context_parts) if context_parts else ""
 
     def delete_conversation(self, conversation_id: int, user_id: int) -> bool:
@@ -316,12 +316,14 @@ class ConversationManager:
         messages = self.get_conversation_messages(conversation_id, limit=5)
 
         if not messages:
+            logger.warning(f"No messages found for conversation {conversation_id} when generating title")
             return None
 
         # Get first few user messages for context
         user_messages = [msg.content for msg in messages if msg.role == MessageRole.USER][:3]
 
         if not user_messages:
+            logger.warning(f"No user messages found for conversation {conversation_id} when generating title")
             return None
 
         # Create a prompt to generate title
@@ -337,14 +339,45 @@ class ConversationManager:
         ]
 
         try:
+            # Log the request for diagnostics
+            logger.info(f"Generating title for conversation {conversation_id} with {len(user_messages)} user messages")
+
             response = await lmstudio_client.chat_completion(
                 messages=context,
                 temperature=0.3,
                 max_tokens=50
             )
 
-            # Remove thinking tags from title response
-            raw_title = response["choices"][0]["message"]["content"].strip()
+            # Process the response to remove thinking tags
+            processed_response = self.response_processor.process_chat_response(response)
+
+            # Extract title from processed response
+            raw_title = processed_response["choices"][0]["message"]["content"].strip()
+
+            # Log the raw title for diagnostics
+            logger.debug(f"Raw title generated for conversation {conversation_id}: '{raw_title}'")
+
+            # Check if the title still contains thinking tags
+            if "<think>" in raw_title or "</think>" in raw_title:
+                logger.warning(f"Title still contains thinking tags after processing for conversation {conversation_id}")
+                # Apply additional thinking tag removal
+                raw_title = self.response_processor.remove_thinking_tags(raw_title)
+                logger.debug(f"Title after additional thinking tag removal: '{raw_title}'")
+
+            # Force remove any remaining thinking tags with a direct regex replacement
+            import re
+            raw_title = re.sub(r'<think>.*?</think>', '', raw_title, flags=re.DOTALL | re.IGNORECASE)
+            raw_title = re.sub(r'<think>.*', '', raw_title, flags=re.DOTALL | re.IGNORECASE)  # Unclosed tags
+            raw_title = re.sub(r'.*</think>', '', raw_title, flags=re.DOTALL | re.IGNORECASE)  # Unopened tags
+
+            # Check if the title is empty or too short after processing
+            if not raw_title or len(raw_title) < 3:
+                logger.warning(f"Empty or too short title generated for conversation {conversation_id}")
+                # Generate a fallback title based on the first user message
+                first_msg = user_messages[0][:30] + "..." if len(user_messages[0]) > 30 else user_messages[0]
+                return f"Chat about {first_msg}"
+
+            # Apply additional summary text processing to ensure clean title
             title = self.response_processor.process_summary_text(raw_title)
 
             # Clean up the title
@@ -352,10 +385,33 @@ class ConversationManager:
             if len(title) > 50:
                 title = title[:47] + "..."
 
+            # Validate the title is meaningful (not just "New Conversation" or similar)
+            if title.lower() in ["new conversation", "conversation", "chat", "new chat", ""]:
+                logger.warning(f"Generic title generated for conversation {conversation_id}: '{title}'")
+                # Generate a fallback title based on the first user message
+                first_msg = user_messages[0][:30] + "..." if len(user_messages[0]) > 30 else user_messages[0]
+                return f"Chat about {first_msg}"
+
+            logger.info(f"Successfully generated title for conversation {conversation_id}: '{title}'")
             return title
+
         except Exception as e:
-            logger.error(f"Failed to generate conversation title: {e}")
-            return None
+            logger.error(f"Failed to generate conversation title for conversation {conversation_id}: {e}")
+
+            # Check for token limit errors specifically
+            error_str = str(e).lower()
+            if "token" in error_str or "limit" in error_str or "exceed" in error_str or "truncated" in error_str:
+                logger.warning(f"Possible token limit issue when generating title for conversation {conversation_id}: {e}")
+
+            # Generate a fallback title based on the first user message
+            try:
+                first_msg = user_messages[0][:30] + "..." if len(user_messages[0]) > 30 else user_messages[0]
+                fallback_title = f"Chat about {first_msg}"
+                logger.info(f"Using fallback title for conversation {conversation_id}: '{fallback_title}'")
+                return fallback_title
+            except Exception as fallback_error:
+                logger.error(f"Failed to generate fallback title: {fallback_error}")
+                return None
 
     async def create_conversation_summary(self, conversation_id: int) -> Optional[ConversationSummary]:
         """Create a semantic summary of the conversation using LLM"""
@@ -436,8 +492,9 @@ Keep the summary under 200 words and make it useful for future reference."""
                 max_tokens=200
             )
 
-            # Remove thinking tags from the summary response
-            raw_summary = summary_response["choices"][0]["message"]["content"].strip()
+            # Process the summary response to remove thinking tags
+            processed_summary_response = self.response_processor.process_chat_response(summary_response)
+            raw_summary = processed_summary_response["choices"][0]["message"]["content"].strip()
             summary = self.response_processor.process_summary_text(raw_summary)
 
             # Generate keywords
@@ -458,8 +515,9 @@ Keep the summary under 200 words and make it useful for future reference."""
                 max_tokens=100
             )
 
-            # Remove thinking tags from keywords response
-            raw_keywords = keywords_response["choices"][0]["message"]["content"].strip()
+            # Process the keywords response to remove thinking tags
+            processed_keywords_response = self.response_processor.process_chat_response(keywords_response)
+            raw_keywords = processed_keywords_response["choices"][0]["message"]["content"].strip()
             keywords = self.response_processor.process_summary_text(raw_keywords)
 
             return summary, keywords
@@ -481,10 +539,10 @@ Keep the summary under 200 words and make it useful for future reference."""
         conversation_parts = []
         for msg in relevant_messages:
             role_label = "User" if msg.role == MessageRole.USER else "Assistant"
-            
+
             # Remove thinking tags from content before summarization
             content = self.response_processor.process_summary_text(msg.content)
-            
+
             # Truncate very long messages
             content = content[:500] + "..." if len(content) > 500 else content
             conversation_parts.append(f"{role_label}: {content}")

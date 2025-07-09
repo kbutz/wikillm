@@ -212,7 +212,9 @@ class EnhancedMemoryManager:
                 max_tokens=200
             )
             
-            content = response["choices"][0]["message"]["content"].strip()
+            # Process response to remove thinking tags
+            processed_response = self.response_processor.process_chat_response(response)
+            content = processed_response["choices"][0]["message"]["content"].strip()
             
             # Extract JSON array
             import json
@@ -392,7 +394,9 @@ Example:
                 max_tokens=1000
             )
 
-            content = response["choices"][0]["message"]["content"].strip()
+            # Process response to remove thinking tags
+            processed_response = self.response_processor.process_chat_response(response)
+            content = processed_response["choices"][0]["message"]["content"].strip()
 
             # Extract and validate JSON
             json_match = re.search(r'\[.*\]', content, re.DOTALL)

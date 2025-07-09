@@ -574,7 +574,9 @@ class SearchManager:
                 max_tokens=1000
             )
 
-            content = response["choices"][0]["message"]["content"].strip()
+            # Process response to remove thinking tags
+            processed_response = self.response_processor.process_chat_response(response)
+            content = processed_response["choices"][0]["message"]["content"].strip()
 
             # Extract and validate JSON
             import json
